@@ -1,0 +1,96 @@
+name: Build and Release EXE & macOS App
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11.3'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r VMware/requirements.txt
+
+      - name: Build Windows EXE
+        run: pyinstaller --onefile --windowed VMware/vmware_snapshot_manager.py
+
+      - name: Upload Windows EXE as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-windows
+          path: dist/vmware_snapshot_manager.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11.3'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r VMware/requirements.txt
+
+      - name: Build macOS App
+        run: pyinstaller --onefile --windowed --name "VMwareSnapshotManager" VMware/vmware_snapshot_manager.py
+
+      - name: Upload macOS App as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-macos
+          path: dist/VMwareSnapshotManager.app
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Windows EXE
+        uses: actions/download-artifact@v4
+        with:
+          name: built-windows
+          path: dist
+
+      - name: Download macOS App
+        uses: actions/download-artifact@v4
+        with:
+          name: built-macos
+          path: dist
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          body: "Automated release with Windows and macOS builds."
+          draft: false
+          prerelease: false
+          files: |
+            dist/vmware_snapshot_manager.exe
+            dist/VMwareSnapshotManager.app
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
