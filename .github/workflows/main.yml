@@ -67,40 +67,7 @@ jobs:
             --name "VMware Snapshot Manager" \
             --icon=icons/app_icon.icns \
             --add-data "icons:icons" \
-            --target-arch universal2 \
             vmware_snapshot_manager.py
-          
-          # Create proper app bundle structure
-          mkdir -p "dist/VMware Snapshot Manager.app/Contents/MacOS"
-          mkdir -p "dist/VMware Snapshot Manager.app/Contents/Resources"
-          mv "dist/VMware Snapshot Manager" "dist/VMware Snapshot Manager.app/Contents/MacOS/"
-          cp icons/app_icon.icns "dist/VMware Snapshot Manager.app/Contents/Resources/"
-          
-          # Create Info.plist
-          cat > "dist/VMware Snapshot Manager.app/Contents/Info.plist" << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleExecutable</key>
-              <string>VMware Snapshot Manager</string>
-              <key>CFBundleIconFile</key>
-              <string>app_icon</string>
-              <key>CFBundleIdentifier</key>
-              <string>com.christiansalas.vmwaresnapshotmanager</string>
-              <key>CFBundleName</key>
-              <string>VMware Snapshot Manager</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>CFBundleShortVersionString</key>
-              <string>${GITHUB_REF_NAME:-1.0.0}</string>
-              <key>LSMinimumSystemVersion</key>
-              <string>10.15</string>
-              <key>NSHighResolutionCapable</key>
-              <true/>
-          </dict>
-          </plist>
-          EOF
 
       - name: Create ZIP of App Bundle
         run: |
@@ -146,15 +113,19 @@ jobs:
             
             ## Downloads
             - Windows: VMware Snapshot Manager.exe
-            - macOS: VMware Snapshot Manager.app
+            - macOS: VMware Snapshot Manager.zip
             
             ## Installation
-            1. Download the appropriate version for your operating system
-            2. Run the executable
+            Windows:
+            1. Download and run the .exe file
+            
+            macOS:
+            1. Download and extract the .zip file
+            2. Right-click the app and select "Open" (first time only)
             
             For detailed instructions, see the [README.md](README.md)
           files: |
             dist/windows/VMware Snapshot Manager.exe
-            dist/macos/VMware Snapshot Manager.app
+            dist/macos/VMware Snapshot Manager.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
