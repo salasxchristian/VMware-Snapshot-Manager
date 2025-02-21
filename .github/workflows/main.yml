@@ -67,13 +67,52 @@ jobs:
             --name "VMware Snapshot Manager" \
             --icon=icons/app_icon.icns \
             --add-data "icons:icons" \
+            --target-arch universal2 \
             vmware_snapshot_manager.py
+          
+          # Create proper app bundle structure
+          mkdir -p "dist/VMware Snapshot Manager.app/Contents/MacOS"
+          mkdir -p "dist/VMware Snapshot Manager.app/Contents/Resources"
+          mv "dist/VMware Snapshot Manager" "dist/VMware Snapshot Manager.app/Contents/MacOS/"
+          cp icons/app_icon.icns "dist/VMware Snapshot Manager.app/Contents/Resources/"
+          
+          # Create Info.plist
+          cat > "dist/VMware Snapshot Manager.app/Contents/Info.plist" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>VMware Snapshot Manager</string>
+              <key>CFBundleIconFile</key>
+              <string>app_icon</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.christiansalas.vmwaresnapshotmanager</string>
+              <key>CFBundleName</key>
+              <string>VMware Snapshot Manager</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${GITHUB_REF_NAME:-1.0.0}</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>10.15</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Create ZIP of App Bundle
+        run: |
+          cd dist
+          zip -r "VMware Snapshot Manager.zip" "VMware Snapshot Manager.app"
+          cd ..
 
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
           name: VMware-Snapshot-Manager-macOS
-          path: dist/VMware Snapshot Manager.app
+          path: dist/VMware Snapshot Manager.zip
 
   release:
     needs: [build-windows, build-macos]
