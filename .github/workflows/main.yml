@@ -26,9 +26,6 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
       
-      - name: Create icons directory
-        run: mkdir icons
-      
       - name: Build Windows EXE
         run: |
           pyinstaller --clean `
@@ -61,9 +58,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
-      
-      - name: Create icons directory
-        run: mkdir icons
       
       - name: Build macOS App
         run: |
