@@ -1,96 +1,127 @@
-name: Build and Release EXE & macOS App
+name: Build and Release
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
+    tags:
+      - 'v*'  # Trigger on version tags
+  workflow_dispatch:  # Manual trigger
 
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11.9'
-
+          cache: 'pip'  # Enable pip caching
+      
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller
           pip install -r requirements.txt
-
+          pip install pyinstaller
+      
+      - name: Create icons directory
+        run: mkdir icons
+      
       - name: Build Windows EXE
-        run: pyinstaller --onefile --windowed vmware_snapshot_manager.py
+        run: |
+          pyinstaller --clean `
+            --onefile `
+            --windowed `
+            --name "VMware Snapshot Manager" `
+            --icon=icons/app_icon.ico `
+            --add-data "icons;icons" `
+            vmware_snapshot_manager.py
 
-      - name: Upload Windows EXE as Artifact
+      - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: built-windows
-          path: dist/vmware_snapshot_manager.exe
+          name: VMware-Snapshot-Manager-Windows
+          path: dist/VMware Snapshot Manager.exe
 
   build-macos:
     runs-on: macos-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11.9'
-
+          cache: 'pip'
+      
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller
           pip install -r requirements.txt
-
+          pip install pyinstaller
+      
+      - name: Create icons directory
+        run: mkdir icons
+      
       - name: Build macOS App
-        run: pyinstaller --onefile --windowed --name "VMwareSnapshotManager" vmware_snapshot_manager.py
+        run: |
+          pyinstaller --clean \
+            --onefile \
+            --windowed \
+            --name "VMware Snapshot Manager" \
+            --icon=icons/app_icon.icns \
+            --add-data "icons:icons" \
+            vmware_snapshot_manager.py
 
-      - name: Upload macOS App as Artifact
+      - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: built-macos
-          path: dist/VMwareSnapshotManager.app
+          name: VMware-Snapshot-Manager-macOS
+          path: dist/VMware Snapshot Manager.app
 
   release:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
+    # Only create release when a tag is pushed
+    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
-
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download Windows EXE
+      - uses: actions/checkout@v4
+      
+      - name: Download Windows Build
         uses: actions/download-artifact@v4
         with:
-          name: built-windows
-          path: dist
-
-      - name: Download macOS App
+          name: VMware-Snapshot-Manager-Windows
+          path: dist/windows
+      
+      - name: Download macOS Build
         uses: actions/download-artifact@v4
         with:
-          name: built-macos
-          path: dist
-
-      - name: Create GitHub Release
-        id: create_release
+          name: VMware-Snapshot-Manager-macOS
+          path: dist/macos
+      
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          body: "Automated release with Windows and macOS builds."
-          draft: false
-          prerelease: false
+          name: Release ${{ github.ref_name }}
+          body: |
+            VMware Snapshot Manager ${{ github.ref_name }}
+            
+            ## Downloads
+            - Windows: VMware Snapshot Manager.exe
+            - macOS: VMware Snapshot Manager.app
+            
+            ## Installation
+            1. Download the appropriate version for your operating system
+            2. Run the executable
+            
+            For detailed instructions, see the [README.md](README.md)
           files: |
-            dist/vmware_snapshot_manager.exe
-            dist/VMwareSnapshotManager.app
+            dist/windows/VMware Snapshot Manager.exe
+            dist/macos/VMware Snapshot Manager.app
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
