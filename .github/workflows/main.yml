@@ -18,7 +18,7 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.11.9'
-          cache: 'pip'  # Enable pip caching
+          cache: 'pip'
       
       - name: Install dependencies
         run: |
@@ -29,18 +29,22 @@ jobs:
       - name: Build Windows EXE
         run: |
           pyinstaller --clean `
-            --onefile `
             --windowed `
             --name "VMware Snapshot Manager" `
             --icon=icons/app_icon.ico `
             --add-data "icons;icons" `
             vmware_snapshot_manager.py
 
+      - name: Create Windows ZIP
+        run: |
+          cd dist
+          Compress-Archive -Path "VMware Snapshot Manager" -DestinationPath "VMware Snapshot Manager-Windows.zip"
+
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
           name: VMware-Snapshot-Manager-Windows
-          path: dist/VMware Snapshot Manager.exe
+          path: dist/VMware Snapshot Manager-Windows.zip
 
   build-macos:
     runs-on: macos-latest
@@ -62,29 +66,26 @@ jobs:
       - name: Build macOS App
         run: |
           pyinstaller --clean \
-            --onefile \
             --windowed \
             --name "VMware Snapshot Manager" \
             --icon=icons/app_icon.icns \
             --add-data "icons:icons" \
             vmware_snapshot_manager.py
 
-      - name: Create ZIP of App Bundle
+      - name: Create macOS ZIP
         run: |
           cd dist
-          zip -r "VMware Snapshot Manager.zip" "VMware Snapshot Manager.app"
-          cd ..
+          zip -r "VMware Snapshot Manager-macOS.zip" "VMware Snapshot Manager.app"
 
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
           name: VMware-Snapshot-Manager-macOS
-          path: dist/VMware Snapshot Manager.zip
+          path: dist/VMware Snapshot Manager-macOS.zip
 
   release:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
-    # Only create release when a tag is pushed
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
@@ -112,20 +113,22 @@ jobs:
             VMware Snapshot Manager ${{ github.ref_name }}
             
             ## Downloads
-            - Windows: VMware Snapshot Manager.exe
-            - macOS: VMware Snapshot Manager.zip
+            - Windows: VMware Snapshot Manager-Windows.zip
+            - macOS: VMware Snapshot Manager-macOS.zip
             
             ## Installation
             Windows:
-            1. Download and run the .exe file
+            1. Download and extract the ZIP file
+            2. Run VMware Snapshot Manager.exe from the extracted folder
             
             macOS:
-            1. Download and extract the .zip file
-            2. Right-click the app and select "Open" (first time only)
+            1. Download and extract the ZIP file
+            2. Move VMware Snapshot Manager.app to Applications (optional)
+            3. Right-click the app and select "Open" (first time only)
             
             For detailed instructions, see the [README.md](README.md)
           files: |
-            dist/windows/VMware Snapshot Manager.exe
-            dist/macos/VMware Snapshot Manager.zip
+            dist/windows/VMware Snapshot Manager-Windows.zip
+            dist/macos/VMware Snapshot Manager-macOS.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
