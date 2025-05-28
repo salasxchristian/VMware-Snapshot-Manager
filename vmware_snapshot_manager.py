@@ -416,7 +416,22 @@ class SnapshotManagerWindow(QMainWindow):
         
         self.status_label = QLabel("Ready")
         self.progress_bar = QProgressBar()
-        self.progress_bar.setMaximumWidth(200)  # Limit width
+        self.progress_bar.setMaximumWidth(250)  # Slightly wider for better visibility
+        self.progress_bar.setMinimumWidth(200)  # Ensure minimum width for readability
+        self.progress_bar.setTextVisible(True)  # Show percentage text
+        self.progress_bar.setFormat("%p%")     # Format as percentage
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #AAAAAA;
+                border-radius: 4px;
+                background: #F0F0F0;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background-color: #4682B4;  /* Steel Blue */
+                border-radius: 3px;
+            }
+        """)
         self.progress_bar.hide()  # Hidden by default
         self.counter_label = QLabel("Snapshots: 0")
         
@@ -654,6 +669,12 @@ class SnapshotManagerWindow(QMainWindow):
         if dialog.exec():
             data = dialog.get_data()
             try:
+                # Show connection progress
+                self.progress_bar.show()
+                self.progress_bar.setMaximum(100)  # Indeterminate progress initially
+                self.progress_bar.setValue(10)  # Show some initial progress
+                self.status_label.setText(f"Connecting to {data['hostname']}...")
+                
                 # Create SSL context that ignores verification
                 context = ssl.create_default_context()
                 context.check_hostname = False
@@ -661,6 +682,9 @@ class SnapshotManagerWindow(QMainWindow):
                 
                 # Disable SSL verification warnings
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                
+                # Update progress to indicate connection attempt
+                self.progress_bar.setValue(30)
                 
                 si = SmartConnect(
                     host=data['hostname'],
@@ -670,13 +694,21 @@ class SnapshotManagerWindow(QMainWindow):
                     disableSslCertValidation=True
                 )
                 
+                # Update progress to show connection established
+                self.progress_bar.setValue(70)
+                self.status_label.setText(f"Connected to {data['hostname']}, initializing...")
+                
                 if si:
                     self.vcenter_connections[data['hostname']] = si
                     self.active_credentials[data['hostname']] = {
                         'username': data['username'],
                         'password': data['password']
                     }
+                    # Save credentials if requested
                     if data['save']:
+                        self.progress_bar.setValue(90)
+                        self.status_label.setText("Saving credentials...")
+                        
                         self.saved_servers[data['hostname']] = data['username']
                         self.config_manager.save_servers(self.saved_servers)
                         self.config_manager.save_password(
@@ -684,9 +716,19 @@ class SnapshotManagerWindow(QMainWindow):
                             data['username'],
                             data['password']
                         )
+                    
+                    # Complete the progress
+                    self.progress_bar.setValue(100)
+                    self.status_label.setText(f"Successfully connected to {data['hostname']}")
+                    
+                    # Update UI and reset progress
                     self.update_connection_status()
                     
+                    # Reset progress after a short delay
+                    QTimer.singleShot(1000, self.reset_progress)
+                    
             except Exception as e:
+                self.reset_progress()
                 QMessageBox.critical(self, "Connection Error", str(e))
                 self.logger.error(f"Failed to connect to {data['hostname']}: {str(e)}")
 
@@ -1072,7 +1114,18 @@ class SnapshotManagerWindow(QMainWindow):
         super().closeEvent(event)
 
     def update_progress(self, value, total, operation):
-        """Update progress bar and status"""
+        """
+        Update progress bar and status for any operation in the application.
+        
+        This is the standardized method for showing progress across all operations.
+        All worker threads should emit progress signals in the format (value, total, message)
+        and connect their signals to this method.
+        
+        Args:
+            value (int): Current progress value
+            total (int): Total steps required for completion
+            operation (str): Description of the current operation
+        """
         if total > 0:
             percentage = (value / total) * 100
             self.progress_bar.setMaximum(total)
@@ -1084,7 +1137,12 @@ class SnapshotManagerWindow(QMainWindow):
             self.status_label.setText(operation)
 
     def reset_progress(self):
-        """Reset progress bar and status"""
+        """
+        Reset progress bar and status label to default state.
+        
+        This method should be called when an operation completes or is cancelled
+        to ensure consistent UI state across the application.
+        """
         self.progress_bar.hide()
         self.progress_bar.setValue(0)
         self.status_label.setText("Ready")

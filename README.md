@@ -13,7 +13,10 @@ A Python-based GUI application for managing VMware snapshots across multiple vCe
   - Snapshot chains (parent/child relationships)
   - Aged snapshots (> 3 business days)
 - Copy functionality for VM names and snapshot details
-- Progress tracking for long-running operations
+- Progress tracking for long-running operations:
+  - Visual progress bars for all operations
+  - Numeric progress indicators with percentage
+  - Status updates during long operations
 - Configurable auto-connect settings
 
 ## Requirements
