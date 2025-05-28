@@ -969,15 +969,41 @@ class SnapshotManagerWindow(QMainWindow):
             lambda completed, total, msg: self.update_progress(completed, total, msg)
         )
         self.create_worker.error.connect(lambda msg: QMessageBox.warning(self, "Errors Occurred", msg))
-        self.create_worker.snapshot_created.connect(lambda server: self.logger.info(f"Created snapshot for {server}"))
+        self.create_worker.snapshot_created.connect(self.handle_created_snapshot)
         self.create_worker.finished.connect(self.on_create_complete)
         self.create_worker.start()
+        
+    def handle_created_snapshot(self, snapshot_data):
+        """
+        Handle newly created snapshots by adding them directly to the tree.
+        This implements a caching strategy that avoids refetching all snapshots
+        after creating new ones, which improves performance.
+        
+        Args:
+            snapshot_data (dict): Dictionary containing snapshot details
+        """
+        # If we received a dict with full snapshot details, add it to the tree
+        if isinstance(snapshot_data, dict) and 'vm_name' in snapshot_data and 'snapshot' in snapshot_data:
+            self.add_snapshot_to_tree(snapshot_data)
+            self.logger.info(f"Added new snapshot for {snapshot_data['vm_name']} to tree")
+        # For backward compatibility with older versions
+        elif isinstance(snapshot_data, dict) and 'vm_name' in snapshot_data:
+            self.logger.info(f"Created snapshot for {snapshot_data['vm_name']}")
+        else:
+            self.logger.info(f"Created snapshot with unknown details")
 
     def on_create_complete(self):
+        """
+        Handle completion of snapshot creation.
+        
+        This method only resets UI elements and doesn't call start_fetch()
+        as the snapshots have already been added to the tree via the 
+        handle_created_snapshot method, implementing an efficient caching strategy.
+        """
         self.reset_progress()
         self.fetch_button.setEnabled(True)
         self.delete_button.setEnabled(True)
-        self.start_fetch()
+        # No need to call start_fetch() as we've already added the snapshots to the tree
 
     def closeEvent(self, event):
         """Save window position when closing"""
@@ -1246,7 +1272,7 @@ class SnapshotCreateWorker(QThread):
     progress = pyqtSignal(int, int, str)  # completed, total, message
     finished = pyqtSignal()
     error = pyqtSignal(str)
-    snapshot_created = pyqtSignal(str)
+    snapshot_created = pyqtSignal(dict)  # Changed from str to dict to include snapshot details for caching
 
     def __init__(self, vcenter_connections, servers, description, memory=False):
         super().__init__()
@@ -1325,7 +1351,33 @@ class SnapshotCreateWorker(QThread):
                         try:
                             if task.info.state == vim.TaskInfo.State.success:
                                 completed += 1
-                                self.snapshot_created.emit(server)
+                                # Get the snapshot we just created
+                                snapshot_obj = None
+                                if vm.snapshot:
+                                    # Find the snapshot that was just created
+                                    for snapshot in self.get_snapshots(vm.snapshot.rootSnapshotList):
+                                        if snapshot.name == "Monthly Patching" and snapshot.createTime.strftime('%Y-%m-%d') == datetime.now().strftime('%Y-%m-%d'):
+                                            snapshot_obj = snapshot
+                                            break
+                                
+                                if snapshot_obj:
+                                    # Emit snapshot details in the same format as SnapshotFetchWorker
+                                    # This enables caching by directly adding to the tree without refetching
+                                    self.snapshot_created.emit({
+                                        'vm_name': vm.name,
+                                        'vcenter': vcenter,
+                                        'name': snapshot_obj.name,
+                                        'created': snapshot_obj.createTime.strftime('%Y-%m-%d %H:%M'),
+                                        'snapshot': snapshot_obj,
+                                        'vm': vm,
+                                        'has_children': bool(snapshot_obj.childSnapshotList),
+                                        'is_child': hasattr(snapshot_obj, 'parent') and snapshot_obj.parent is not None
+                                    })
+                                else:
+                                    # If we can't find the snapshot object, just emit the server name
+                                    # This ensures backward compatibility
+                                    self.snapshot_created.emit({'vm_name': server})
+                                
                                 self.progress.emit(completed, total, 
                                     f"Progress: {completed}/{total} ({(completed/total)*100:.1f}%)")
                                 del active_tasks[task]
@@ -1370,6 +1422,14 @@ class SnapshotCreateWorker(QThread):
             if vm:
                 return vm
         return None
+        
+    def get_snapshots(self, snapshots):
+        """Helper method to traverse snapshot tree"""
+        result = []
+        for snapshot in snapshots:
+            result.append(snapshot)
+            result.extend(self.get_snapshots(snapshot.childSnapshotList))
+        return result
 
 class AutoConnectDialog(QDialog):
     def __init__(self, parent=None):
