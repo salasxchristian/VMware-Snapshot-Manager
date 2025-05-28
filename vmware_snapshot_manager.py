@@ -974,7 +974,14 @@ class SnapshotManagerWindow(QMainWindow):
         self.create_worker.start()
         
     def handle_created_snapshot(self, snapshot_data):
-        """Handle newly created snapshots by adding them directly to the tree"""
+        """
+        Handle newly created snapshots by adding them directly to the tree.
+        This implements a caching strategy that avoids refetching all snapshots
+        after creating new ones, which improves performance.
+        
+        Args:
+            snapshot_data (dict): Dictionary containing snapshot details
+        """
         # If we received a dict with full snapshot details, add it to the tree
         if isinstance(snapshot_data, dict) and 'vm_name' in snapshot_data and 'snapshot' in snapshot_data:
             self.add_snapshot_to_tree(snapshot_data)
@@ -986,7 +993,13 @@ class SnapshotManagerWindow(QMainWindow):
             self.logger.info(f"Created snapshot with unknown details")
 
     def on_create_complete(self):
-        """Handle completion of snapshot creation"""
+        """
+        Handle completion of snapshot creation.
+        
+        This method only resets UI elements and doesn't call start_fetch()
+        as the snapshots have already been added to the tree via the 
+        handle_created_snapshot method, implementing an efficient caching strategy.
+        """
         self.reset_progress()
         self.fetch_button.setEnabled(True)
         self.delete_button.setEnabled(True)
@@ -1259,7 +1272,7 @@ class SnapshotCreateWorker(QThread):
     progress = pyqtSignal(int, int, str)  # completed, total, message
     finished = pyqtSignal()
     error = pyqtSignal(str)
-    snapshot_created = pyqtSignal(dict)  # Changed from str to dict to include snapshot details
+    snapshot_created = pyqtSignal(dict)  # Changed from str to dict to include snapshot details for caching
 
     def __init__(self, vcenter_connections, servers, description, memory=False):
         super().__init__()
@@ -1349,6 +1362,7 @@ class SnapshotCreateWorker(QThread):
                                 
                                 if snapshot_obj:
                                     # Emit snapshot details in the same format as SnapshotFetchWorker
+                                    # This enables caching by directly adding to the tree without refetching
                                     self.snapshot_created.emit({
                                         'vm_name': vm.name,
                                         'vcenter': vcenter,
