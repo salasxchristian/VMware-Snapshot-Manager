@@ -24,7 +24,7 @@ from PyQt6.QtCore import QSettings
 class SnapshotFetchWorker(QThread):
     """Worker thread for fetching snapshots"""
     finished = pyqtSignal()
-    progress = pyqtSignal(str)
+    progress = pyqtSignal(int, int, str)  # completed, total, message
     snapshot_found = pyqtSignal(dict)
     error = pyqtSignal(str)
 
@@ -34,28 +34,56 @@ class SnapshotFetchWorker(QThread):
 
     def run(self):
         try:
+            # Initialize tracking variables
+            total_vcenters = len(self.vcenter_connections)
+            completed_vcenters = 0
+            
             for hostname, si in self.vcenter_connections.items():
-                self.progress.emit(f"Fetching from {hostname}...")
+                completed_vcenters += 1
+                self.progress.emit(completed_vcenters, total_vcenters, 
+                                   f"Fetching from {hostname}... ({completed_vcenters}/{total_vcenters})")
+                
                 content = si.RetrieveContent()
                 container = content.viewManager.CreateContainerView(
                     content.rootFolder, [vim.VirtualMachine], True
                 )
                 
+                # Count VMs with snapshots for more detailed progress
+                snapshot_vms = 0
+                processed_vms = 0
+                
+                # First count VMs with snapshots
                 for vm in container.view:
                     if vm.snapshot:
-                        for snapshot in self.get_snapshots(vm.snapshot.rootSnapshotList):
-                            if 'patch' in snapshot.name.lower():
-                                self.snapshot_found.emit({
-                                    'vm_name': vm.name,
-                                    'vcenter': hostname,
-                                    'name': snapshot.name,
-                                    'created': snapshot.createTime.strftime('%Y-%m-%d %H:%M'),
-                                    'snapshot': snapshot,
-                                    'vm': vm,
-                                    'has_children': bool(snapshot.childSnapshotList),
-                                    'is_child': hasattr(snapshot, 'parent') and snapshot.parent is not None
-                                })
+                        snapshot_vms += 1
+                
+                if snapshot_vms > 0:
+                    # Now process VMs with progress updates
+                    for vm in container.view:
+                        if vm.snapshot:
+                            processed_vms += 1
+                            self.progress.emit(
+                                completed_vcenters-1, total_vcenters,
+                                f"Fetching from {hostname}... Processing VM {processed_vms}/{snapshot_vms}"
+                            )
+                            
+                            for snapshot in self.get_snapshots(vm.snapshot.rootSnapshotList):
+                                if 'patch' in snapshot.name.lower():
+                                    self.snapshot_found.emit({
+                                        'vm_name': vm.name,
+                                        'vcenter': hostname,
+                                        'name': snapshot.name,
+                                        'created': snapshot.createTime.strftime('%Y-%m-%d %H:%M'),
+                                        'snapshot': snapshot,
+                                        'vm': vm,
+                                        'has_children': bool(snapshot.childSnapshotList),
+                                        'is_child': hasattr(snapshot, 'parent') and snapshot.parent is not None
+                                    })
+                
                 container.Destroy()
+            
+            # Final progress update
+            self.progress.emit(total_vcenters, total_vcenters, "Completed fetching snapshots")
             self.finished.emit()
         except Exception as e:
             self.error.emit(str(e))
@@ -173,7 +201,7 @@ class AddVCenterDialog(QDialog):
 
 class SnapshotDeleteWorker(QThread):
     """Worker thread for deleting snapshots"""
-    progress = pyqtSignal(str)
+    progress = pyqtSignal(int, int, str)  # completed, total, message
     finished = pyqtSignal()
     error = pyqtSignal(str)
     item_complete = pyqtSignal(QTreeWidgetItem)
@@ -190,7 +218,8 @@ class SnapshotDeleteWorker(QThread):
         # Start all deletion tasks
         for item, data in self.items_to_delete:
             try:
-                self.progress.emit(f"Starting deletion of {data['name']} from {data['vm_name']}")
+                self.progress.emit(completed, total, 
+                                  f"Starting deletion of {data['name']} from {data['vm_name']} ({completed}/{total})")
                 
                 # Get the VM and snapshot objects
                 snapshot = data['snapshot']
@@ -227,12 +256,13 @@ class SnapshotDeleteWorker(QThread):
             # Calculate and show overall progress
             if active_tasks:
                 overall_progress = (completed * 100 + total_progress) / total
-                self.progress.emit(f"Deleting snapshots... {overall_progress:.0f}%")
+                self.progress.emit(completed, total, 
+                                  f"Deleting snapshots... {overall_progress:.0f}%")
             
             # Small delay before next check
             time.sleep(0.5)
         
-        self.progress.emit("Deletion complete")
+        self.progress.emit(total, total, "Deletion complete")
         self.finished.emit()
 
 class SnapshotManagerWindow(QMainWindow):
@@ -386,7 +416,22 @@ class SnapshotManagerWindow(QMainWindow):
         
         self.status_label = QLabel("Ready")
         self.progress_bar = QProgressBar()
-        self.progress_bar.setMaximumWidth(200)  # Limit width
+        self.progress_bar.setMaximumWidth(250)  # Slightly wider for better visibility
+        self.progress_bar.setMinimumWidth(200)  # Ensure minimum width for readability
+        self.progress_bar.setTextVisible(True)  # Show percentage text
+        self.progress_bar.setFormat("%p%")     # Format as percentage
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #AAAAAA;
+                border-radius: 4px;
+                background: #F0F0F0;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background-color: #4682B4;  /* Steel Blue */
+                border-radius: 3px;
+            }
+        """)
         self.progress_bar.hide()  # Hidden by default
         self.counter_label = QLabel("Snapshots: 0")
         
@@ -624,6 +669,12 @@ class SnapshotManagerWindow(QMainWindow):
         if dialog.exec():
             data = dialog.get_data()
             try:
+                # Show connection progress
+                self.progress_bar.show()
+                self.progress_bar.setMaximum(100)  # Indeterminate progress initially
+                self.progress_bar.setValue(10)  # Show some initial progress
+                self.status_label.setText(f"Connecting to {data['hostname']}...")
+                
                 # Create SSL context that ignores verification
                 context = ssl.create_default_context()
                 context.check_hostname = False
@@ -631,6 +682,9 @@ class SnapshotManagerWindow(QMainWindow):
                 
                 # Disable SSL verification warnings
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                
+                # Update progress to indicate connection attempt
+                self.progress_bar.setValue(30)
                 
                 si = SmartConnect(
                     host=data['hostname'],
@@ -640,13 +694,21 @@ class SnapshotManagerWindow(QMainWindow):
                     disableSslCertValidation=True
                 )
                 
+                # Update progress to show connection established
+                self.progress_bar.setValue(70)
+                self.status_label.setText(f"Connected to {data['hostname']}, initializing...")
+                
                 if si:
                     self.vcenter_connections[data['hostname']] = si
                     self.active_credentials[data['hostname']] = {
                         'username': data['username'],
                         'password': data['password']
                     }
+                    # Save credentials if requested
                     if data['save']:
+                        self.progress_bar.setValue(90)
+                        self.status_label.setText("Saving credentials...")
+                        
                         self.saved_servers[data['hostname']] = data['username']
                         self.config_manager.save_servers(self.saved_servers)
                         self.config_manager.save_password(
@@ -654,9 +716,19 @@ class SnapshotManagerWindow(QMainWindow):
                             data['username'],
                             data['password']
                         )
+                    
+                    # Complete the progress
+                    self.progress_bar.setValue(100)
+                    self.status_label.setText(f"Successfully connected to {data['hostname']}")
+                    
+                    # Update UI and reset progress
                     self.update_connection_status()
                     
+                    # Reset progress after a short delay
+                    QTimer.singleShot(1000, self.reset_progress)
+                    
             except Exception as e:
+                self.reset_progress()
                 QMessageBox.critical(self, "Connection Error", str(e))
                 self.logger.error(f"Failed to connect to {data['hostname']}: {str(e)}")
 
@@ -697,10 +769,14 @@ class SnapshotManagerWindow(QMainWindow):
         self.tree.clear()
         self.fetch_button.setEnabled(False)
         self.delete_button.setText("Delete Selected")  # Reset delete button text
+        
+        # Show initial progress
+        self.progress_bar.show()
+        self.progress_bar.setValue(0)
         self.status_label.setText("Fetching snapshots...")
         
         self.fetch_worker = SnapshotFetchWorker(self.vcenter_connections)
-        self.fetch_worker.progress.connect(self.status_label.setText)
+        self.fetch_worker.progress.connect(self.update_progress)
         self.fetch_worker.snapshot_found.connect(self.add_snapshot_to_tree)
         self.fetch_worker.error.connect(self.on_fetch_error)
         self.fetch_worker.finished.connect(self.on_fetch_complete)
@@ -808,7 +884,7 @@ class SnapshotManagerWindow(QMainWindow):
 
     def on_fetch_complete(self):
         """Handle fetch completion"""
-        self.status_label.setText("Ready")
+        self.reset_progress()
         self.fetch_button.setEnabled(True)
         self.delete_button.setEnabled(True)
 
@@ -817,8 +893,13 @@ class SnapshotManagerWindow(QMainWindow):
         self.fetch_button.setEnabled(False)
         self.delete_button.setEnabled(False)
         
+        # Show initial progress
+        self.progress_bar.show()
+        self.progress_bar.setValue(0)
+        self.status_label.setText("Starting snapshot deletion...")
+        
         self.delete_worker = SnapshotDeleteWorker(selected_items)
-        self.delete_worker.progress.connect(self.status_label.setText)
+        self.delete_worker.progress.connect(self.update_progress)
         self.delete_worker.error.connect(lambda msg: QMessageBox.warning(self, "Error", msg))
         self.delete_worker.item_complete.connect(self.remove_deleted_item)
         self.delete_worker.finished.connect(self.on_delete_complete)
@@ -837,12 +918,14 @@ class SnapshotManagerWindow(QMainWindow):
 
     def on_delete_complete(self):
         """Handle deletion completion"""
-        self.status_label.setText("Ready")
+        self.reset_progress()
         self.fetch_button.setEnabled(True)
         self.delete_button.setEnabled(True)
 
     def check_connections(self):
         """Check all connections and reconnect if needed"""
+        reconnect_needed = []
+        
         for hostname, si in list(self.vcenter_connections.items()):
             try:
                 # Test connection by making a simple API call
@@ -850,40 +933,59 @@ class SnapshotManagerWindow(QMainWindow):
             except Exception as e:
                 self.logger.warning(f"Connection to {hostname} lost: {str(e)}")
                 
-                # Try to reconnect if we have credentials
+                # Add to reconnection list if we have credentials
                 if hostname in self.active_credentials:
-                    self.status_label.setText(f"Reconnecting to {hostname}...")
-                    try:
-                        creds = self.active_credentials[hostname]
-                        context = ssl.create_default_context()
-                        context.check_hostname = False
-                        context.verify_mode = ssl.CERT_NONE
-                        
-                        new_si = SmartConnect(
-                            host=hostname,
-                            user=creds['username'],
-                            pwd=creds['password'],
-                            sslContext=context,
-                            disableSslCertValidation=True
-                        )
-                        
-                        if new_si:
-                            self.vcenter_connections[hostname] = new_si
-                            self.logger.info(f"Successfully reconnected to {hostname}")
-                            self.status_label.setText("Ready")
-                        else:
-                            self.logger.error(f"Failed to reconnect to {hostname}")
-                            self.status_label.setText("Ready")
-                            
-                    except Exception as reconnect_error:
-                        self.logger.error(f"Failed to reconnect to {hostname}: {str(reconnect_error)}")
-                        self.status_label.setText("Ready")
-                        # Remove failed connection
-                        self.vcenter_connections.pop(hostname, None)
-                        self.active_credentials.pop(hostname, None)
+                    reconnect_needed.append(hostname)
                 else:
                     # No credentials available, remove the connection
                     self.vcenter_connections.pop(hostname, None)
+        
+        # If reconnections needed, show progress
+        if reconnect_needed:
+            total = len(reconnect_needed)
+            completed = 0
+            
+            # Show progress bar
+            self.progress_bar.show()
+            self.progress_bar.setValue(0)
+            self.progress_bar.setMaximum(total)
+            
+            for hostname in reconnect_needed:
+                completed += 1
+                self.status_label.setText(f"Reconnecting to {hostname}... ({completed}/{total})")
+                self.progress_bar.setValue(completed)
+                
+                try:
+                    creds = self.active_credentials[hostname]
+                    context = ssl.create_default_context()
+                    context.check_hostname = False
+                    context.verify_mode = ssl.CERT_NONE
+                    
+                    new_si = SmartConnect(
+                        host=hostname,
+                        user=creds['username'],
+                        pwd=creds['password'],
+                        sslContext=context,
+                        disableSslCertValidation=True
+                    )
+                    
+                    if new_si:
+                        self.vcenter_connections[hostname] = new_si
+                        self.logger.info(f"Successfully reconnected to {hostname}")
+                    else:
+                        self.logger.error(f"Failed to reconnect to {hostname}")
+                        # Remove failed connection
+                        self.vcenter_connections.pop(hostname, None)
+                        self.active_credentials.pop(hostname, None)
+                        
+                except Exception as reconnect_error:
+                    self.logger.error(f"Failed to reconnect to {hostname}: {str(reconnect_error)}")
+                    # Remove failed connection
+                    self.vcenter_connections.pop(hostname, None)
+                    self.active_credentials.pop(hostname, None)
+            
+            # Reset progress when done
+            self.reset_progress()
         
         # Update UI based on current connections
         self.update_connection_status()
@@ -1012,7 +1114,18 @@ class SnapshotManagerWindow(QMainWindow):
         super().closeEvent(event)
 
     def update_progress(self, value, total, operation):
-        """Update progress bar and status"""
+        """
+        Update progress bar and status for any operation in the application.
+        
+        This is the standardized method for showing progress across all operations.
+        All worker threads should emit progress signals in the format (value, total, message)
+        and connect their signals to this method.
+        
+        Args:
+            value (int): Current progress value
+            total (int): Total steps required for completion
+            operation (str): Description of the current operation
+        """
         if total > 0:
             percentage = (value / total) * 100
             self.progress_bar.setMaximum(total)
@@ -1024,7 +1137,12 @@ class SnapshotManagerWindow(QMainWindow):
             self.status_label.setText(operation)
 
     def reset_progress(self):
-        """Reset progress bar and status"""
+        """
+        Reset progress bar and status label to default state.
+        
+        This method should be called when an operation completes or is cancelled
+        to ensure consistent UI state across the application.
+        """
         self.progress_bar.hide()
         self.progress_bar.setValue(0)
         self.status_label.setText("Ready")
@@ -1047,15 +1165,32 @@ class SnapshotManagerWindow(QMainWindow):
         
         # Perform auto-connect if enabled
         if auto_connect:
+            # Show progress for auto-connect
+            self.progress_bar.show()
+            self.progress_bar.setValue(0)
+            self.progress_bar.setMaximum(len(self.saved_servers))
             self.status_label.setText("Auto-connecting to saved vCenters...")
             QTimer.singleShot(0, self.auto_connect_to_saved)
+        else:
+            self.reset_progress()
 
     def auto_connect_to_saved(self):
         """Automatically connect to all saved vCenters"""
-        for hostname, username in self.saved_servers.items():
+        servers = list(self.saved_servers.items())
+        total = len(servers)
+        connected = 0
+        
+        for hostname, username in servers:
             password = self.config_manager.get_password(hostname, username)
             if password:
                 try:
+                    # Update progress
+                    connected += 1
+                    self.update_progress(
+                        connected, total, 
+                        f"Connecting to {hostname}... ({connected}/{total})"
+                    )
+                    
                     # Create SSL context that ignores verification
                     context = ssl.create_default_context()
                     context.check_hostname = False
@@ -1084,7 +1219,7 @@ class SnapshotManagerWindow(QMainWindow):
         
         # Update UI after all connection attempts
         self.update_connection_status()
-        self.status_label.setText("Ready")
+        self.reset_progress()
 
     def show_auto_connect_settings(self):
         """Show dialog to modify auto-connect settings"""
