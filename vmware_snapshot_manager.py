@@ -18,8 +18,22 @@ import time
 from PyQt6.QtGui import QColor, QBrush, QIcon
 import keyring
 from PyQt6.QtCore import QSettings
+import getpass
+import re
+from snapshot_filters import SnapshotFilterPanel
 
 # Built by Christian Salas
+
+class ProgressTracker:
+    """Standardized progress tracking for all operations"""
+    @staticmethod
+    def emit_progress(signal, current, total, operation, details=""):
+        """Emit standardized progress signal"""
+        if details:
+            message = f"{operation}: {details} ({current}/{total})"
+        else:
+            message = f"{operation} ({current}/{total})"
+        signal.emit(current, total, message)
 
 class SnapshotFetchWorker(QThread):
     """Worker thread for fetching snapshots"""
@@ -34,14 +48,14 @@ class SnapshotFetchWorker(QThread):
 
     def run(self):
         try:
-            # Initialize tracking variables
             total_vcenters = len(self.vcenter_connections)
             completed_vcenters = 0
             
             for hostname, si in self.vcenter_connections.items():
-                completed_vcenters += 1
-                self.progress.emit(completed_vcenters, total_vcenters, 
-                                   f"Fetching from {hostname}... ({completed_vcenters}/{total_vcenters})")
+                ProgressTracker.emit_progress(
+                    self.progress, completed_vcenters, total_vcenters,
+                    "Connecting", f"{hostname}"
+                )
                 
                 content = si.RetrieveContent()
                 container = content.viewManager.CreateContainerView(
@@ -62,18 +76,24 @@ class SnapshotFetchWorker(QThread):
                     for vm in container.view:
                         if vm.snapshot:
                             processed_vms += 1
-                            self.progress.emit(
-                                completed_vcenters-1, total_vcenters,
-                                f"Fetching from {hostname}... Processing VM {processed_vms}/{snapshot_vms}"
+                            ProgressTracker.emit_progress(
+                                self.progress, processed_vms, snapshot_vms,
+                                "Processing", f"{vm.name}"
                             )
                             
                             for snapshot in self.get_snapshots(vm.snapshot.rootSnapshotList):
                                 if 'patch' in snapshot.name.lower():
+                                    # Get creator information from snapshot description
+                                    # VMware snapshots don't have a built-in createdBy property
+                                    created_by = self.extract_creator_from_description(snapshot.description)
+                                    
                                     self.snapshot_found.emit({
                                         'vm_name': vm.name,
                                         'vcenter': hostname,
                                         'name': snapshot.name,
                                         'created': snapshot.createTime.strftime('%Y-%m-%d %H:%M'),
+                                        'created_by': created_by,
+                                        'description': snapshot.description or '',
                                         'snapshot': snapshot,
                                         'vm': vm,
                                         'has_children': bool(snapshot.childSnapshotList),
@@ -81,9 +101,13 @@ class SnapshotFetchWorker(QThread):
                                     })
                 
                 container.Destroy()
+                completed_vcenters += 1
             
             # Final progress update
-            self.progress.emit(total_vcenters, total_vcenters, "Completed fetching snapshots")
+            ProgressTracker.emit_progress(
+                self.progress, total_vcenters, total_vcenters,
+                "Complete", "Snapshots retrieved"
+            )
             self.finished.emit()
         except Exception as e:
             self.error.emit(str(e))
@@ -94,6 +118,63 @@ class SnapshotFetchWorker(QThread):
             result.append(snapshot)
             result.extend(self.get_snapshots(snapshot.childSnapshotList))
         return result
+    
+    def extract_creator_from_description(self, description):
+        """
+        Extract creator information from snapshot description.
+        VMware snapshots don't have a built-in 'createdBy' property,
+        so we need to parse it from the description field.
+        """
+        if not description:
+            return 'Unknown'
+        
+        # Look for patterns like "Created by: username" or "(Created by: username)"
+        patterns = [
+            r'\(Created by:\s*([^)]+)\)',  # (Created by: username)
+            r'Created by:\s*([^\n,;]+)',   # Created by: username
+            r'\[Created by:\s*([^\]]+)\]', # [Created by: username]
+            r'User:\s*([^\n,;]+)',         # User: username
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        
+        return 'Unknown'
+    
+    def extract_creator_from_description(self, description):
+        """
+        Extract creator information from snapshot description.
+        
+        VMware snapshots don't have a built-in createdBy property,
+        so we look for creator information in the description field.
+        
+        Args:
+            description (str): The snapshot description
+            
+        Returns:
+            str: The username who created the snapshot, or 'Unknown'
+        """
+        if not description:
+            return 'Unknown'
+        
+        import re
+        
+        # Look for patterns like "Created by: username" or "(Created by: username)"
+        patterns = [
+            r'Created by:\s*(\w+)',
+            r'\(Created by:\s*(\w+)\)',
+            r'User:\s*(\w+)',
+            r'By:\s*(\w+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        
+        return 'Unknown'
 
 class AddVCenterDialog(QDialog):
     def __init__(self, saved_servers, config_manager, parent=None):
@@ -218,8 +299,10 @@ class SnapshotDeleteWorker(QThread):
         # Start all deletion tasks
         for item, data in self.items_to_delete:
             try:
-                self.progress.emit(completed, total, 
-                                  f"Starting deletion of {data['name']} from {data['vm_name']} ({completed}/{total})")
+                ProgressTracker.emit_progress(
+                    self.progress, completed, total,
+                    "Deleting", f"{data['vm_name']}"
+                )
                 
                 # Get the VM and snapshot objects
                 snapshot = data['snapshot']
@@ -256,13 +339,18 @@ class SnapshotDeleteWorker(QThread):
             # Calculate and show overall progress
             if active_tasks:
                 overall_progress = (completed * 100 + total_progress) / total
-                self.progress.emit(completed, total, 
-                                  f"Deleting snapshots... {overall_progress:.0f}%")
+                ProgressTracker.emit_progress(
+                    self.progress, completed, total,
+                    "Deleting", f"{overall_progress:.0f}%"
+                )
             
             # Small delay before next check
             time.sleep(0.5)
         
-        self.progress.emit(total, total, "Deletion complete")
+        ProgressTracker.emit_progress(
+            self.progress, total, total,
+            "Complete", "All deleted"
+        )
         self.finished.emit()
 
 class SnapshotManagerWindow(QMainWindow):
@@ -332,9 +420,13 @@ class SnapshotManagerWindow(QMainWindow):
         conn_layout.addWidget(self.conn_label)
         conn_layout.addStretch()
         
+        # Filter panel
+        self.filter_panel = SnapshotFilterPanel()
+        self.filter_panel.filters_changed.connect(self.apply_filters)
+        
         # Tree widget for snapshots
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Select", "VM Name", "vCenter", "Snapshot Name", "Created", "Snapshot Type"])
+        self.tree.setHeaderLabels(["Select", "VM Name", "vCenter", "Snapshot Name", "Created", "Created By", "Description", "Snapshot Type"])
         self.tree.setSortingEnabled(True)
         
         # Disable row selection, only allow checkbox interaction
@@ -416,8 +508,8 @@ class SnapshotManagerWindow(QMainWindow):
         
         self.status_label = QLabel("Ready")
         self.progress_bar = QProgressBar()
-        self.progress_bar.setMaximumWidth(250)  # Slightly wider for better visibility
-        self.progress_bar.setMinimumWidth(200)  # Ensure minimum width for readability
+        self.progress_bar.setMaximumWidth(150)  # Compact size
+        self.progress_bar.setMinimumWidth(120)  # Compact minimum width
         self.progress_bar.setTextVisible(True)  # Show percentage text
         self.progress_bar.setFormat("%p%")     # Format as percentage
         self.progress_bar.setStyleSheet("""
@@ -435,13 +527,14 @@ class SnapshotManagerWindow(QMainWindow):
         self.progress_bar.hide()  # Hidden by default
         self.counter_label = QLabel("Snapshots: 0")
         
-        status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.progress_bar)
+        status_layout.addWidget(self.status_label)
         status_layout.addStretch()
         status_layout.addWidget(self.counter_label)
         
         # Add all sections to main layout
         main_layout.addWidget(conn_frame)
+        main_layout.addWidget(self.filter_panel)
         main_layout.addWidget(self.tree)
         main_layout.addWidget(highlight_frame)
         main_layout.addWidget(button_frame)
@@ -449,11 +542,13 @@ class SnapshotManagerWindow(QMainWindow):
 
         # Add column widths
         self.tree.setColumnWidth(0, 50)   # Checkbox column
-        self.tree.setColumnWidth(1, 200)  # VM Name
-        self.tree.setColumnWidth(2, 200)  # vCenter
-        self.tree.setColumnWidth(3, 200)  # Snapshot Name
-        self.tree.setColumnWidth(4, 150)  # Created
-        self.tree.setColumnWidth(5, 150)  # Snapshot Type column - increased width for new name
+        self.tree.setColumnWidth(1, 180)  # VM Name
+        self.tree.setColumnWidth(2, 180)  # vCenter
+        self.tree.setColumnWidth(3, 180)  # Snapshot Name
+        self.tree.setColumnWidth(4, 130)  # Created
+        self.tree.setColumnWidth(5, 120)  # Created By
+        self.tree.setColumnWidth(6, 250)  # Description
+        self.tree.setColumnWidth(7, 150)  # Snapshot Type column
 
         # After loading saved_servers
         self.check_auto_connect()
@@ -669,10 +764,7 @@ class SnapshotManagerWindow(QMainWindow):
         if dialog.exec():
             data = dialog.get_data()
             try:
-                # Show connection progress
-                self.progress_bar.show()
-                self.progress_bar.setMaximum(100)  # Indeterminate progress initially
-                self.progress_bar.setValue(10)  # Show some initial progress
+                # Show connection status without progress bar
                 self.status_label.setText(f"Connecting to {data['hostname']}...")
                 
                 # Create SSL context that ignores verification
@@ -683,9 +775,6 @@ class SnapshotManagerWindow(QMainWindow):
                 # Disable SSL verification warnings
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                 
-                # Update progress to indicate connection attempt
-                self.progress_bar.setValue(30)
-                
                 si = SmartConnect(
                     host=data['hostname'],
                     user=data['username'],
@@ -694,8 +783,6 @@ class SnapshotManagerWindow(QMainWindow):
                     disableSslCertValidation=True
                 )
                 
-                # Update progress to show connection established
-                self.progress_bar.setValue(70)
                 self.status_label.setText(f"Connected to {data['hostname']}, initializing...")
                 
                 if si:
@@ -706,7 +793,6 @@ class SnapshotManagerWindow(QMainWindow):
                     }
                     # Save credentials if requested
                     if data['save']:
-                        self.progress_bar.setValue(90)
                         self.status_label.setText("Saving credentials...")
                         
                         self.saved_servers[data['hostname']] = data['username']
@@ -717,18 +803,16 @@ class SnapshotManagerWindow(QMainWindow):
                             data['password']
                         )
                     
-                    # Complete the progress
-                    self.progress_bar.setValue(100)
                     self.status_label.setText(f"Successfully connected to {data['hostname']}")
                     
-                    # Update UI and reset progress
+                    # Update UI and reset status after a delay
                     self.update_connection_status()
                     
-                    # Reset progress after a short delay
-                    QTimer.singleShot(1000, self.reset_progress)
+                    # Reset status after a short delay
+                    QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
                     
             except Exception as e:
-                self.reset_progress()
+                self.status_label.setText("Ready")
                 QMessageBox.critical(self, "Connection Error", str(e))
                 self.logger.error(f"Failed to connect to {data['hostname']}: {str(e)}")
 
@@ -767,6 +851,8 @@ class SnapshotManagerWindow(QMainWindow):
     def start_fetch(self):
         """Start fetching snapshots in background"""
         self.tree.clear()
+        self.snapshots.clear()  # Clear snapshot data
+        self.clear_filters_on_refresh()  # Clear filters
         self.fetch_button.setEnabled(False)
         self.delete_button.setText("Delete Selected")  # Reset delete button text
         
@@ -795,7 +881,7 @@ class SnapshotManagerWindow(QMainWindow):
             warning_color = QColor(211, 211, 211)  # Light gray
             warning_text = QColor(128, 128, 128)  # Gray text
             
-            for column in range(6):
+            for column in range(8):
                 item.setBackground(column, QBrush(warning_color))
                 item.setForeground(column, QBrush(warning_text))
             
@@ -819,6 +905,8 @@ class SnapshotManagerWindow(QMainWindow):
         item.setText(2, data['vcenter'])
         item.setText(3, data['name'])
         item.setText(4, data['created'])
+        item.setText(5, data.get('created_by', 'Unknown'))  # Add created by column
+        item.setText(6, data.get('description', ''))  # Add description column
         
         # Add chain status column
         if is_in_chain:
@@ -830,7 +918,7 @@ class SnapshotManagerWindow(QMainWindow):
                 chain_status = "Child Snapshot"
         else:
             chain_status = "Independent Snapshot"  # Changed from "Safe to Delete"
-        item.setText(5, chain_status)
+        item.setText(7, chain_status)
         
         # Check if snapshot is older than 3 business days
         created_date = datetime.strptime(data['created'], '%Y-%m-%d %H:%M')
@@ -844,7 +932,7 @@ class SnapshotManagerWindow(QMainWindow):
             background_color = QColor(255, 255, 200)  # Light yellow
             text_color = QColor(139, 69, 19)  # Saddle brown (dark brown)
             
-            for column in range(6):
+            for column in range(8):
                 item.setBackground(column, QBrush(background_color))
                 item.setForeground(column, QBrush(text_color))
             
@@ -862,7 +950,10 @@ class SnapshotManagerWindow(QMainWindow):
         self.snapshots[snapshot_id] = data
         
         # Update counter
-        self.counter_label.setText(f"Snapshots: {self.tree.topLevelItemCount()}")
+        self.update_snapshot_counter()
+        
+        # Update filter dropdown options
+        self.filter_panel.update_dropdown_options(self.snapshots)
 
     def get_business_days(self, start_date, end_date):
         """Calculate number of business days between two dates"""
@@ -887,6 +978,9 @@ class SnapshotManagerWindow(QMainWindow):
         self.reset_progress()
         self.fetch_button.setEnabled(True)
         self.delete_button.setEnabled(True)
+        
+        # Update filter dropdown options with new data
+        self.filter_panel.update_dropdown_options(self.snapshots)
 
     def start_delete(self, selected_items):
         """Start deletion process"""
@@ -911,7 +1005,7 @@ class SnapshotManagerWindow(QMainWindow):
         if snapshot_id in self.snapshots:
             del self.snapshots[snapshot_id]
         self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
-        self.counter_label.setText(f"Snapshots: {self.tree.topLevelItemCount()}")
+        self.update_snapshot_counter()
         
         # Reset delete button text after deletion
         self.delete_button.setText("Delete Selected")
@@ -940,20 +1034,14 @@ class SnapshotManagerWindow(QMainWindow):
                     # No credentials available, remove the connection
                     self.vcenter_connections.pop(hostname, None)
         
-        # If reconnections needed, show progress
+        # If reconnections needed, show status without progress
         if reconnect_needed:
             total = len(reconnect_needed)
             completed = 0
             
-            # Show progress bar
-            self.progress_bar.show()
-            self.progress_bar.setValue(0)
-            self.progress_bar.setMaximum(total)
-            
             for hostname in reconnect_needed:
                 completed += 1
                 self.status_label.setText(f"Reconnecting to {hostname}... ({completed}/{total})")
-                self.progress_bar.setValue(completed)
                 
                 try:
                     creds = self.active_credentials[hostname]
@@ -984,8 +1072,8 @@ class SnapshotManagerWindow(QMainWindow):
                     self.vcenter_connections.pop(hostname, None)
                     self.active_credentials.pop(hostname, None)
             
-            # Reset progress when done
-            self.reset_progress()
+            # Reset status when done
+            self.status_label.setText("Ready")
         
         # Update UI based on current connections
         self.update_connection_status()
@@ -1022,6 +1110,26 @@ class SnapshotManagerWindow(QMainWindow):
         
         # Reset status after 2 seconds
         QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
+    
+    def get_current_vcenter_username(self):
+        """
+        Get the vCenter username from active credentials, stripping domain if present.
+        Returns the first available username, or system user as fallback.
+        """
+        for hostname, credentials in self.active_credentials.items():
+            username = credentials.get('username', '')
+            if username:
+                # Strip domain part (e.g., "csalas@vsphere.local" -> "csalas")
+                if '@' in username:
+                    return username.split('@')[0]
+                # Strip domain part (e.g., "DOMAIN\\csalas" -> "csalas")
+                elif '\\' in username:
+                    return username.split('\\')[-1]
+                else:
+                    return username
+        
+        # Fallback to system username if no vCenter credentials available
+        return getpass.getuser()
 
     def on_item_double_clicked(self, item, column):
         """Handle double-click to copy cell content"""
@@ -1061,11 +1169,15 @@ class SnapshotManagerWindow(QMainWindow):
         self.fetch_button.setEnabled(False)
         self.delete_button.setEnabled(False)
         
+        # Get the vCenter username for creator tracking
+        vcenter_username = self.get_current_vcenter_username()
+        
         self.create_worker = SnapshotCreateWorker(
             self.vcenter_connections, 
             servers, 
             description,
-            memory
+            memory,
+            vcenter_username
         )
         self.create_worker.progress.connect(
             lambda completed, total, msg: self.update_progress(completed, total, msg)
@@ -1165,14 +1277,11 @@ class SnapshotManagerWindow(QMainWindow):
         
         # Perform auto-connect if enabled
         if auto_connect:
-            # Show progress for auto-connect
-            self.progress_bar.show()
-            self.progress_bar.setValue(0)
-            self.progress_bar.setMaximum(len(self.saved_servers))
+            # Show status without progress bar
             self.status_label.setText("Auto-connecting to saved vCenters...")
             QTimer.singleShot(0, self.auto_connect_to_saved)
         else:
-            self.reset_progress()
+            self.status_label.setText("Ready")
 
     def auto_connect_to_saved(self):
         """Automatically connect to all saved vCenters"""
@@ -1184,12 +1293,9 @@ class SnapshotManagerWindow(QMainWindow):
             password = self.config_manager.get_password(hostname, username)
             if password:
                 try:
-                    # Update progress
+                    # Update status without progress bar
                     connected += 1
-                    self.update_progress(
-                        connected, total, 
-                        f"Connecting to {hostname}... ({connected}/{total})"
-                    )
+                    self.status_label.setText(f"Auto-connecting to {hostname}... ({connected}/{total})")
                     
                     # Create SSL context that ignores verification
                     context = ssl.create_default_context()
@@ -1219,7 +1325,7 @@ class SnapshotManagerWindow(QMainWindow):
         
         # Update UI after all connection attempts
         self.update_connection_status()
-        self.reset_progress()
+        self.status_label.setText("Ready")
 
     def show_auto_connect_settings(self):
         """Show dialog to modify auto-connect settings"""
@@ -1232,6 +1338,47 @@ class SnapshotManagerWindow(QMainWindow):
         
         if dialog.exec() == QDialog.DialogCode.Accepted:
             settings.setValue("AutoConnect", dialog.auto_connect.isChecked())
+    
+    def apply_filters(self):
+        """
+        Apply current filters to the snapshot tree.
+        This method is called whenever any filter changes.
+        """
+        root = self.tree.invisibleRootItem()
+        visible_count = 0
+        
+        for i in range(root.childCount()):
+            item = root.child(i)
+            snapshot_id = item.data(0, Qt.ItemDataRole.UserRole)
+            
+            if snapshot_id in self.snapshots:
+                snapshot_data = self.snapshots[snapshot_id]
+                
+                # Check if item matches filters
+                should_show = self.filter_panel.matches_filters(snapshot_data)
+                
+                item.setHidden(not should_show)
+                if should_show:
+                    visible_count += 1
+        
+        # Update counter to show filtered results
+        total_count = self.tree.topLevelItemCount()
+        if visible_count == total_count:
+            self.counter_label.setText(f"Snapshots: {total_count}")
+        else:
+            self.counter_label.setText(f"Snapshots: {visible_count} of {total_count} shown")
+    
+    def update_snapshot_counter(self):
+        """
+        Update the snapshot counter label.
+        """
+        self.counter_label.setText(f"Snapshots: {self.tree.topLevelItemCount()}")
+    
+    def clear_filters_on_refresh(self):
+        """
+        Clear all filters when snapshots are refreshed.
+        """
+        self.filter_panel.clear_all_filters()
 
 class ConfigManager:
     def __init__(self):
@@ -1409,12 +1556,13 @@ class SnapshotCreateWorker(QThread):
     error = pyqtSignal(str)
     snapshot_created = pyqtSignal(dict)  # Changed from str to dict to include snapshot details for caching
 
-    def __init__(self, vcenter_connections, servers, description, memory=False):
+    def __init__(self, vcenter_connections, servers, description, memory=False, vcenter_username=None):
         super().__init__()
         self.vcenter_connections = vcenter_connections
         self.servers = servers
         self.description = description
         self.memory = memory
+        self.vcenter_username = vcenter_username or getpass.getuser()  # Fallback to system user
         self.batch_size = 5  # Process 5 servers per vCenter at a time
 
     def run(self):
@@ -1423,13 +1571,19 @@ class SnapshotCreateWorker(QThread):
         failed = []
         
         # Show initial progress
-        self.progress.emit(0, total, "Locating VMs across vCenters...")
+        ProgressTracker.emit_progress(
+            self.progress, 0, total,
+            "Locating", "VMs"
+        )
         
         # Group servers by vCenter
         servers_by_vcenter = {}
         for i, server in enumerate(self.servers, 1):
             # Update progress during VM discovery
-            self.progress.emit(0, total, f"Locating VM: {server} ({i}/{total})")
+            ProgressTracker.emit_progress(
+                self.progress, i-1, total,
+                "Finding", f"{server}"
+            )
             
             # Find which vCenter the VM belongs to
             found = False
@@ -1452,26 +1606,37 @@ class SnapshotCreateWorker(QThread):
 
         # Show how many VMs were found
         found_count = sum(len(servers) for servers in servers_by_vcenter.values())
-        self.progress.emit(0, total, f"Found {found_count} VMs. Starting snapshot creation...")
+        ProgressTracker.emit_progress(
+            self.progress, 0, total,
+            "Creating", f"Found {found_count}"
+        )
 
         # Process each vCenter's servers in batches
         active_tasks = {}  # {task: (server_name, vcenter_name)}
         
         for vcenter, server_list in servers_by_vcenter.items():
-            self.progress.emit(completed, total, f"Creating snapshots on {vcenter}")
+            ProgressTracker.emit_progress(
+                self.progress, completed, total,
+                "Creating", f"{vcenter}"
+            )
             
             for i in range(0, len(server_list), self.batch_size):
                 batch = server_list[i:i + self.batch_size]
                 batch_servers = [s[1] for s in batch]
-                self.progress.emit(completed, total, 
-                    f"Starting batch: {', '.join(batch_servers)}")
+                ProgressTracker.emit_progress(
+                    self.progress, completed, total,
+                    "Batch", f"{len(batch_servers)} VMs"
+                )
                 
                 # Start snapshot creation for batch
                 for vm, server in batch:
                     try:
+                        # Add creator information to description using vCenter username
+                        description_with_creator = f"{self.description} (Created by: {self.vcenter_username})"
+                        
                         task = vm.CreateSnapshot_Task(
                             name=f"Monthly Patching",
-                            description=self.description,
+                            description=description_with_creator,
                             memory=self.memory,
                             quiesce=False
                         )
@@ -1496,6 +1661,10 @@ class SnapshotCreateWorker(QThread):
                                             break
                                 
                                 if snapshot_obj:
+                                    # Get creator information from description
+                                    # VMware snapshots don't have a built-in createdBy property
+                                    created_by = self.extract_creator_from_description(snapshot_obj.description)
+                                    
                                     # Emit snapshot details in the same format as SnapshotFetchWorker
                                     # This enables caching by directly adding to the tree without refetching
                                     self.snapshot_created.emit({
@@ -1503,6 +1672,8 @@ class SnapshotCreateWorker(QThread):
                                         'vcenter': vcenter,
                                         'name': snapshot_obj.name,
                                         'created': snapshot_obj.createTime.strftime('%Y-%m-%d %H:%M'),
+                                        'created_by': created_by,
+                                        'description': snapshot_obj.description or '',
                                         'snapshot': snapshot_obj,
                                         'vm': vm,
                                         'has_children': bool(snapshot_obj.childSnapshotList),
@@ -1513,8 +1684,10 @@ class SnapshotCreateWorker(QThread):
                                     # This ensures backward compatibility
                                     self.snapshot_created.emit({'vm_name': server})
                                 
-                                self.progress.emit(completed, total, 
-                                    f"Progress: {completed}/{total} ({(completed/total)*100:.1f}%)")
+                                ProgressTracker.emit_progress(
+                                    self.progress, completed, total,
+                                    "Created", f"{(completed/total)*100:.1f}%"
+                                )
                                 del active_tasks[task]
                             elif task.info.state == vim.TaskInfo.State.error:
                                 failed.append(f"Failed: {server}: {task.info.error.msg}")
@@ -1523,8 +1696,10 @@ class SnapshotCreateWorker(QThread):
                                 # Show individual task progress
                                 task_progress = task.info.progress or 0
                                 active_count = len(active_tasks)
-                                self.progress.emit(completed, total,
-                                    f"Progress: {completed}/{total} - Active tasks: {active_count} - Current: {server} ({task_progress}%)")
+                                ProgressTracker.emit_progress(
+                                    self.progress, completed, total,
+                                    "Working", f"{server} ({task_progress}%)"
+                                )
                         except Exception as e:
                             failed.append(f"Error monitoring {server}: {str(e)}")
                             del active_tasks[task]
@@ -1533,9 +1708,10 @@ class SnapshotCreateWorker(QThread):
         # Final status
         if failed:
             self.error.emit("\n".join(failed))
-        self.progress.emit(completed, total, 
-            f"Completed: {completed}/{total} successful" + 
-            (f" ({len(failed)} failed)" if failed else ""))
+        ProgressTracker.emit_progress(
+            self.progress, completed, total,
+            "Complete", f"{completed} done" + (f", {len(failed)} failed" if failed else "")
+        )
         self.finished.emit()
 
     def find_vm_in_vcenter(self, si, name):
@@ -1565,6 +1741,39 @@ class SnapshotCreateWorker(QThread):
             result.append(snapshot)
             result.extend(self.get_snapshots(snapshot.childSnapshotList))
         return result
+    
+    def extract_creator_from_description(self, description):
+        """
+        Extract creator information from snapshot description.
+        
+        VMware snapshots don't have a built-in createdBy property,
+        so we look for creator information in the description field.
+        
+        Args:
+            description (str): The snapshot description
+            
+        Returns:
+            str: The username who created the snapshot, or 'Unknown'
+        """
+        if not description:
+            return 'Unknown'
+        
+        import re
+        
+        # Look for patterns like "Created by: username" or "(Created by: username)"
+        patterns = [
+            r'Created by:\s*(\w+)',
+            r'\(Created by:\s*(\w+)\)',
+            r'User:\s*(\w+)',
+            r'By:\s*(\w+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        
+        return 'Unknown'
 
 class AutoConnectDialog(QDialog):
     def __init__(self, parent=None):
