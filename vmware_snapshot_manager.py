@@ -42,9 +42,10 @@ class SnapshotFetchWorker(QThread):
     snapshot_found = pyqtSignal(dict)
     error = pyqtSignal(str)
 
-    def __init__(self, vcenter_connections):
+    def __init__(self, vcenter_connections, filter_patching_only=True):
         super().__init__()
         self.vcenter_connections = vcenter_connections
+        self.filter_patching_only = filter_patching_only
 
     def run(self):
         try:
@@ -82,7 +83,12 @@ class SnapshotFetchWorker(QThread):
                             )
                             
                             for snapshot in self.get_snapshots(vm.snapshot.rootSnapshotList):
-                                if 'patch' in snapshot.name.lower():
+                                # Check if we should include this snapshot
+                                include_snapshot = True
+                                if self.filter_patching_only:
+                                    include_snapshot = 'patch' in snapshot.name.lower()
+                                
+                                if include_snapshot:
                                     # Get creator information from snapshot description
                                     # VMware snapshots don't have a built-in createdBy property
                                     created_by = self.extract_creator_from_description(snapshot.description)
@@ -356,7 +362,7 @@ class SnapshotDeleteWorker(QThread):
 class SnapshotManagerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("VMware Patching Snapshot Manager")
+        self.setWindowTitle("VMware Snapshot Manager")
         self.resize(1200, 600)
         
         # Load and apply last window position
@@ -415,10 +421,23 @@ class SnapshotManagerWindow(QMainWindow):
         
         self.conn_label = QLabel("No active connections")
         
+        # Add checkbox for filtering patching snapshots
+        self.patch_filter_checkbox = QCheckBox("Only show 'Patching' snapshots")
+        self.patch_filter_checkbox.setToolTip("When checked, only snapshots containing 'patch' in the name are fetched")
+        
+        # Load saved state from settings
+        settings = QSettings()
+        patch_filter_enabled = settings.value("PatchFilterEnabled", True, type=bool)
+        self.patch_filter_checkbox.setChecked(patch_filter_enabled)
+        
+        # Connect to save state when changed
+        self.patch_filter_checkbox.stateChanged.connect(self.save_patch_filter_state)
+        
         conn_layout.addWidget(self.add_conn_btn)
         conn_layout.addWidget(self.clear_conn_btn)
         conn_layout.addWidget(self.conn_label)
         conn_layout.addStretch()
+        conn_layout.addWidget(self.patch_filter_checkbox)
         
         # Filter panel
         self.filter_panel = SnapshotFilterPanel()
@@ -861,7 +880,10 @@ class SnapshotManagerWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.status_label.setText("Fetching snapshots...")
         
-        self.fetch_worker = SnapshotFetchWorker(self.vcenter_connections)
+        # Get the filter setting from checkbox
+        filter_patching_only = self.patch_filter_checkbox.isChecked()
+        
+        self.fetch_worker = SnapshotFetchWorker(self.vcenter_connections, filter_patching_only)
         self.fetch_worker.progress.connect(self.update_progress)
         self.fetch_worker.snapshot_found.connect(self.add_snapshot_to_tree)
         self.fetch_worker.error.connect(self.on_fetch_error)
@@ -1379,6 +1401,13 @@ class SnapshotManagerWindow(QMainWindow):
         Clear all filters when snapshots are refreshed.
         """
         self.filter_panel.clear_all_filters()
+    
+    def save_patch_filter_state(self):
+        """
+        Save the patch filter checkbox state to settings.
+        """
+        settings = QSettings()
+        settings.setValue("PatchFilterEnabled", self.patch_filter_checkbox.isChecked())
 
 class ConfigManager:
     def __init__(self):
