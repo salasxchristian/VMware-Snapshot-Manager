@@ -7,7 +7,7 @@ It includes a collapsible filter panel with various filter types for all snapsho
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                             QLineEdit, QComboBox, QDateEdit, QPushButton,
-                            QFrame, QGridLayout, QSizePolicy)
+                            QFrame, QGridLayout, QSizePolicy, QCheckBox)
 from PyQt6.QtCore import Qt, pyqtSignal, QDate
 from PyQt6.QtGui import QIcon
 from datetime import datetime, timedelta
@@ -108,7 +108,7 @@ class SnapshotFilterPanel(QWidget):
         self.date_to_filter.setSpecialValueText("No maximum date")
         filter_layout.addWidget(self.date_to_filter, row, 3)
         
-        # Row 4: Snapshot Type
+        # Row 4: Snapshot Type and Patching Filter
         row += 1
         
         # Snapshot Type filter
@@ -120,6 +120,11 @@ class SnapshotFilterPanel(QWidget):
         self.snapshot_type_filter.addItem("Part of Chain (Middle)")
         self.snapshot_type_filter.addItem("Has Child Snapshots (Delete Manually)")
         filter_layout.addWidget(self.snapshot_type_filter, row, 1)
+        
+        # Patching snapshots filter
+        self.patching_only_filter = QCheckBox("Only show 'Patching' snapshots")
+        self.patching_only_filter.setToolTip("When checked, only snapshots containing 'patch' in the name are shown")
+        filter_layout.addWidget(self.patching_only_filter, row, 2, 1, 2)  # Span 2 columns
         
         # Add frames to main layout
         main_layout.addWidget(header_frame)
@@ -135,6 +140,9 @@ class SnapshotFilterPanel(QWidget):
         self.vcenter_filter.currentTextChanged.connect(self.filters_changed.emit)
         self.created_by_filter.currentTextChanged.connect(self.filters_changed.emit)
         self.snapshot_type_filter.currentTextChanged.connect(self.filters_changed.emit)
+        
+        # Checkbox filters
+        self.patching_only_filter.stateChanged.connect(self.filters_changed.emit)
         
         # Date filters
         self.date_from_filter.dateChanged.connect(self.filters_changed.emit)
@@ -161,6 +169,9 @@ class SnapshotFilterPanel(QWidget):
         self.vcenter_filter.setCurrentIndex(0)
         self.created_by_filter.setCurrentIndex(0)
         self.snapshot_type_filter.setCurrentIndex(0)
+        
+        # Reset checkbox filters
+        self.patching_only_filter.setChecked(False)
         
         # Reset date filters to default range
         self.date_from_filter.setDate(QDate.currentDate().addDays(-30))
@@ -221,6 +232,7 @@ class SnapshotFilterPanel(QWidget):
             'vcenter': self.vcenter_filter.currentText() if self.vcenter_filter.currentText() != "All vCenters" else "",
             'created_by': self.created_by_filter.currentText() if self.created_by_filter.currentText() != "All Users" else "",
             'snapshot_type': self.snapshot_type_filter.currentText() if self.snapshot_type_filter.currentText() != "All Types" else "",
+            'patching_only': self.patching_only_filter.isChecked(),
             'date_from': self.date_from_filter.date().toPyDate(),
             'date_to': self.date_to_filter.date().toPyDate()
         }
@@ -276,6 +288,12 @@ class SnapshotFilterPanel(QWidget):
             if filters['snapshot_type'] != snapshot_type:
                 return False
         
+        # Patching snapshots filter
+        if filters['patching_only']:
+            snapshot_name = snapshot_data.get('name', '').lower()
+            if 'patch' not in snapshot_name:
+                return False
+        
         # Date range filter
         try:
             created_str = snapshot_data.get('created', '')
@@ -290,3 +308,21 @@ class SnapshotFilterPanel(QWidget):
             pass
         
         return True
+    
+    def set_patching_filter(self, enabled):
+        """
+        Set the patching filter checkbox state.
+        
+        Args:
+            enabled (bool): Whether to enable the patching filter
+        """
+        self.patching_only_filter.setChecked(enabled)
+    
+    def get_patching_filter(self):
+        """
+        Get the current patching filter state.
+        
+        Returns:
+            bool: True if patching filter is enabled
+        """
+        return self.patching_only_filter.isChecked()

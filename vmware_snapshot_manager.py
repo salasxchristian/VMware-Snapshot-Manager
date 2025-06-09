@@ -42,10 +42,9 @@ class SnapshotFetchWorker(QThread):
     snapshot_found = pyqtSignal(dict)
     error = pyqtSignal(str)
 
-    def __init__(self, vcenter_connections, filter_patching_only=True):
+    def __init__(self, vcenter_connections):
         super().__init__()
         self.vcenter_connections = vcenter_connections
-        self.filter_patching_only = filter_patching_only
 
     def run(self):
         try:
@@ -83,28 +82,22 @@ class SnapshotFetchWorker(QThread):
                             )
                             
                             for snapshot in self.get_snapshots(vm.snapshot.rootSnapshotList):
-                                # Check if we should include this snapshot
-                                include_snapshot = True
-                                if self.filter_patching_only:
-                                    include_snapshot = 'patch' in snapshot.name.lower()
+                                # Get creator information from snapshot description
+                                # VMware snapshots don't have a built-in createdBy property
+                                created_by = self.extract_creator_from_description(snapshot.description)
                                 
-                                if include_snapshot:
-                                    # Get creator information from snapshot description
-                                    # VMware snapshots don't have a built-in createdBy property
-                                    created_by = self.extract_creator_from_description(snapshot.description)
-                                    
-                                    self.snapshot_found.emit({
-                                        'vm_name': vm.name,
-                                        'vcenter': hostname,
-                                        'name': snapshot.name,
-                                        'created': snapshot.createTime.strftime('%Y-%m-%d %H:%M'),
-                                        'created_by': created_by,
-                                        'description': snapshot.description or '',
-                                        'snapshot': snapshot,
-                                        'vm': vm,
-                                        'has_children': bool(snapshot.childSnapshotList),
-                                        'is_child': hasattr(snapshot, 'parent') and snapshot.parent is not None
-                                    })
+                                self.snapshot_found.emit({
+                                    'vm_name': vm.name,
+                                    'vcenter': hostname,
+                                    'name': snapshot.name,
+                                    'created': snapshot.createTime.strftime('%Y-%m-%d %H:%M'),
+                                    'created_by': created_by,
+                                    'description': snapshot.description or '',
+                                    'snapshot': snapshot,
+                                    'vm': vm,
+                                    'has_children': bool(snapshot.childSnapshotList),
+                                    'is_child': hasattr(snapshot, 'parent') and snapshot.parent is not None
+                                })
                 
                 container.Destroy()
                 completed_vcenters += 1
@@ -430,8 +423,9 @@ class SnapshotManagerWindow(QMainWindow):
         patch_filter_enabled = settings.value("PatchFilterEnabled", True, type=bool)
         self.patch_filter_checkbox.setChecked(patch_filter_enabled)
         
-        # Connect to save state when changed
+        # Connect to filter panel and save state when changed
         self.patch_filter_checkbox.stateChanged.connect(self.save_patch_filter_state)
+        self.patch_filter_checkbox.stateChanged.connect(self.sync_patch_filter_to_panel)
         
         conn_layout.addWidget(self.add_conn_btn)
         conn_layout.addWidget(self.clear_conn_btn)
@@ -442,6 +436,10 @@ class SnapshotManagerWindow(QMainWindow):
         # Filter panel
         self.filter_panel = SnapshotFilterPanel()
         self.filter_panel.filters_changed.connect(self.apply_filters)
+        self.filter_panel.filters_changed.connect(self.sync_patch_filter_from_panel)
+        
+        # Sync the patching filter with the main checkbox
+        self.filter_panel.set_patching_filter(patch_filter_enabled)
         
         # Tree widget for snapshots
         self.tree = QTreeWidget()
@@ -880,10 +878,7 @@ class SnapshotManagerWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.status_label.setText("Fetching snapshots...")
         
-        # Get the filter setting from checkbox
-        filter_patching_only = self.patch_filter_checkbox.isChecked()
-        
-        self.fetch_worker = SnapshotFetchWorker(self.vcenter_connections, filter_patching_only)
+        self.fetch_worker = SnapshotFetchWorker(self.vcenter_connections)
         self.fetch_worker.progress.connect(self.update_progress)
         self.fetch_worker.snapshot_found.connect(self.add_snapshot_to_tree)
         self.fetch_worker.error.connect(self.on_fetch_error)
@@ -1408,6 +1403,26 @@ class SnapshotManagerWindow(QMainWindow):
         """
         settings = QSettings()
         settings.setValue("PatchFilterEnabled", self.patch_filter_checkbox.isChecked())
+    
+    def sync_patch_filter_to_panel(self):
+        """
+        Sync the main patch filter checkbox state to the filter panel.
+        """
+        self.filter_panel.set_patching_filter(self.patch_filter_checkbox.isChecked())
+    
+    def sync_patch_filter_from_panel(self):
+        """
+        Sync the filter panel's patch filter state back to the main checkbox.
+        """
+        current_main_state = self.patch_filter_checkbox.isChecked()
+        panel_state = self.filter_panel.get_patching_filter()
+        
+        if current_main_state != panel_state:
+            # Temporarily disconnect to avoid infinite loop
+            self.patch_filter_checkbox.stateChanged.disconnect(self.sync_patch_filter_to_panel)
+            self.patch_filter_checkbox.setChecked(panel_state)
+            self.save_patch_filter_state()  # Save the new state
+            self.patch_filter_checkbox.stateChanged.connect(self.sync_patch_filter_to_panel)
 
 class ConfigManager:
     def __init__(self):
