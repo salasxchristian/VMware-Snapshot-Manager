@@ -69,11 +69,11 @@ class SnapshotFilterPanel(QWidget):
         self.vm_name_filter.setPlaceholderText("Filter by VM name...")
         filter_layout.addWidget(self.vm_name_filter, row, 1)
         
-        # Snapshot Name filter
-        filter_layout.addWidget(QLabel("Snapshot Name:"), row, 2)
-        self.snapshot_name_filter = QLineEdit()
-        self.snapshot_name_filter.setPlaceholderText("Filter by snapshot name...")
-        filter_layout.addWidget(self.snapshot_name_filter, row, 3)
+        # Combined Snapshot/Description filter
+        filter_layout.addWidget(QLabel("Name/Description:"), row, 2)
+        self.snapshot_search_filter = QLineEdit()
+        self.snapshot_search_filter.setPlaceholderText("Search snapshot name or description...")
+        filter_layout.addWidget(self.snapshot_search_filter, row, 3)
         
         # Row 2: Dropdown filters
         row += 1
@@ -108,24 +108,18 @@ class SnapshotFilterPanel(QWidget):
         self.date_to_filter.setSpecialValueText("No maximum date")
         filter_layout.addWidget(self.date_to_filter, row, 3)
         
-        # Row 4: Description and Snapshot Type
+        # Row 4: Snapshot Type
         row += 1
         
-        # Description filter
-        filter_layout.addWidget(QLabel("Description:"), row, 0)
-        self.description_filter = QLineEdit()
-        self.description_filter.setPlaceholderText("Filter by description...")
-        filter_layout.addWidget(self.description_filter, row, 1)
-        
         # Snapshot Type filter
-        filter_layout.addWidget(QLabel("Snapshot Type:"), row, 2)
+        filter_layout.addWidget(QLabel("Snapshot Type:"), row, 0)
         self.snapshot_type_filter = QComboBox()
         self.snapshot_type_filter.addItem("All Types")
         self.snapshot_type_filter.addItem("Independent Snapshot")
         self.snapshot_type_filter.addItem("Child Snapshot")
         self.snapshot_type_filter.addItem("Part of Chain (Middle)")
         self.snapshot_type_filter.addItem("Has Child Snapshots (Delete Manually)")
-        filter_layout.addWidget(self.snapshot_type_filter, row, 3)
+        filter_layout.addWidget(self.snapshot_type_filter, row, 1)
         
         # Add frames to main layout
         main_layout.addWidget(header_frame)
@@ -135,8 +129,7 @@ class SnapshotFilterPanel(QWidget):
         """Connect all filter controls to the signal"""
         # Text filters
         self.vm_name_filter.textChanged.connect(self.filters_changed.emit)
-        self.snapshot_name_filter.textChanged.connect(self.filters_changed.emit)
-        self.description_filter.textChanged.connect(self.filters_changed.emit)
+        self.snapshot_search_filter.textChanged.connect(self.filters_changed.emit)
         
         # Dropdown filters
         self.vcenter_filter.currentTextChanged.connect(self.filters_changed.emit)
@@ -162,8 +155,7 @@ class SnapshotFilterPanel(QWidget):
         """Clear all filter values"""
         # Clear text filters
         self.vm_name_filter.clear()
-        self.snapshot_name_filter.clear()
-        self.description_filter.clear()
+        self.snapshot_search_filter.clear()
         
         # Reset dropdown filters
         self.vcenter_filter.setCurrentIndex(0)
@@ -225,8 +217,7 @@ class SnapshotFilterPanel(QWidget):
         """
         return {
             'vm_name': self.vm_name_filter.text().strip(),
-            'snapshot_name': self.snapshot_name_filter.text().strip(),
-            'description': self.description_filter.text().strip(),
+            'snapshot_search': self.snapshot_search_filter.text().strip(),
             'vcenter': self.vcenter_filter.currentText() if self.vcenter_filter.currentText() != "All vCenters" else "",
             'created_by': self.created_by_filter.currentText() if self.created_by_filter.currentText() != "All Users" else "",
             'snapshot_type': self.snapshot_type_filter.currentText() if self.snapshot_type_filter.currentText() != "All Types" else "",
@@ -250,11 +241,15 @@ class SnapshotFilterPanel(QWidget):
         if filters['vm_name'] and filters['vm_name'].lower() not in snapshot_data.get('vm_name', '').lower():
             return False
             
-        if filters['snapshot_name'] and filters['snapshot_name'].lower() not in snapshot_data.get('name', '').lower():
-            return False
+        # Combined snapshot name/description search
+        if filters['snapshot_search']:
+            search_term = filters['snapshot_search'].lower()
+            snapshot_name = snapshot_data.get('name', '').lower()
+            description = snapshot_data.get('description', '').lower()
             
-        if filters['description'] and filters['description'].lower() not in snapshot_data.get('description', '').lower():
-            return False
+            # Search term must match either snapshot name OR description
+            if search_term not in snapshot_name and search_term not in description:
+                return False
         
         # Dropdown filters (exact match)
         if filters['vcenter'] and filters['vcenter'] != snapshot_data.get('vcenter', ''):
