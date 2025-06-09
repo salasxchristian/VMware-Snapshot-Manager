@@ -415,7 +415,7 @@ class SnapshotManagerWindow(QMainWindow):
         self.conn_label = QLabel("No active connections")
         
         # Add checkbox for filtering patching snapshots
-        self.patch_filter_checkbox = QCheckBox("Only show 'Patching' snapshots")
+        self.patch_filter_checkbox = QCheckBox("Show 'Monthly OS Patching' snapshots only")
         self.patch_filter_checkbox.setToolTip("When checked, only snapshots containing 'patch' in the name are fetched")
         
         # Load saved state from settings
@@ -1512,7 +1512,7 @@ class CreateSnapshotsDialog(QDialog):
         # Description field
         desc_layout = QHBoxLayout()
         desc_label = QLabel("Snapshot Description:")
-        self.desc_input = QLineEdit("Monthly Patching")
+        self.desc_input = QLineEdit("Monthly OS Patching")
         desc_layout.addWidget(desc_label)
         desc_layout.addWidget(self.desc_input)
         layout.addLayout(desc_layout)
@@ -1679,7 +1679,7 @@ class SnapshotCreateWorker(QThread):
                         description_with_creator = f"{self.description} (Created by: {self.vcenter_username})"
                         
                         task = vm.CreateSnapshot_Task(
-                            name=f"Monthly Patching",
+                            name=f"Monthly OS Patching",
                             description=description_with_creator,
                             memory=self.memory,
                             quiesce=False
@@ -1700,7 +1700,7 @@ class SnapshotCreateWorker(QThread):
                                 if vm.snapshot:
                                     # Find the snapshot that was just created
                                     for snapshot in self.get_snapshots(vm.snapshot.rootSnapshotList):
-                                        if snapshot.name == "Monthly Patching" and snapshot.createTime.strftime('%Y-%m-%d') == datetime.now().strftime('%Y-%m-%d'):
+                                        if snapshot.name == "Monthly OS Patching" and snapshot.createTime.strftime('%Y-%m-%d') == datetime.now().strftime('%Y-%m-%d'):
                                             snapshot_obj = snapshot
                                             break
                                 
