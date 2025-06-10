@@ -22,6 +22,7 @@ from PyQt6.QtCore import QSettings
 import getpass
 import re
 from snapshot_filters import SnapshotFilterPanel
+from version import __version__
 
 # Built by Christian Salas
 
@@ -356,7 +357,7 @@ class SnapshotDeleteWorker(QThread):
 class SnapshotManagerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("pySnap - VMware Snapshot Manager")
+        self.setWindowTitle(f"pySnap - VMware Snapshot Manager v{__version__}")
         self.resize(1200, 600)
         
         # Load and apply last window position

@@ -7,6 +7,10 @@ macOS version (Universal binary for Intel + Apple Silicon)
 import os
 import sys
 
+# Import version dynamically
+sys.path.insert(0, os.path.dirname(os.path.abspath(SPEC)))
+from version import __version__
+
 block_cipher = None
 
 # Get the directory containing this spec file
@@ -19,6 +23,7 @@ a = Analysis(
     datas=[
         ('icons', 'icons'),  # Include entire icons directory
         ('snapshot_filters.py', '.'),  # Include the filters module
+        ('version.py', '.'),  # Include version file
     ],
     hiddenimports=[
         'keyring.backends.macOS',
@@ -93,8 +98,8 @@ app = BUNDLE(
         'CFBundleName': 'pySnap',
         'CFBundleDisplayName': 'pySnap - VMware Snapshot Manager',
         'CFBundleIdentifier': 'net.lausd.pysnap',
-        'CFBundleVersion': '1.2.0',
-        'CFBundleShortVersionString': '1.2.0',
+        'CFBundleVersion': __version__,
+        'CFBundleShortVersionString': __version__,
         'CFBundleExecutable': 'pySnap',
         'CFBundleIconFile': 'app_icon.icns',
         'CFBundlePackageType': 'APPL',
@@ -113,7 +118,7 @@ app = BUNDLE(
         # Keychain access is handled by entitlements
     },
     # Additional options for better macOS integration
-    version='1.2.0',
+    version=__version__,
 )
 
 # Create a DMG configuration (optional, for reference)

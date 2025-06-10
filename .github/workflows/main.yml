@@ -26,25 +26,30 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
       
+      - name: Run Tests
+        run: python run_tests.py
+      
       - name: Build Windows EXE
         run: |
           pyinstaller --clean `
             --windowed `
-            --name "VMware Snapshot Manager" `
+            --name "pySnap" `
             --icon=icons/app_icon.ico `
             --add-data "icons;icons" `
+            --add-data "version.py;." `
+            --add-data "snapshot_filters.py;." `
             vmware_snapshot_manager.py
 
       - name: Create Windows ZIP
         run: |
           cd dist
-          Compress-Archive -Path "VMware Snapshot Manager" -DestinationPath "VMware Snapshot Manager-Windows.zip"
+          Compress-Archive -Path "pySnap" -DestinationPath "pySnap-Windows.zip"
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VMware-Snapshot-Manager-Windows
-          path: dist/VMware Snapshot Manager-Windows.zip
+          name: pySnap-Windows
+          path: dist/pySnap-Windows.zip
 
   build-macos:
     runs-on: macos-latest
@@ -63,25 +68,22 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
       
+      - name: Run Tests
+        run: python run_tests.py
+      
       - name: Build macOS App
-        run: |
-          pyinstaller --clean \
-            --windowed \
-            --name "VMware Snapshot Manager" \
-            --icon=icons/app_icon.icns \
-            --add-data "icons:icons" \
-            vmware_snapshot_manager.py
+        run: pyinstaller pysnap_mac.spec
 
       - name: Create macOS ZIP
         run: |
           cd dist
-          zip -r "VMware Snapshot Manager-macOS.zip" "VMware Snapshot Manager.app"
+          zip -r "pySnap-macOS.zip" "pySnap.app"
 
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VMware-Snapshot-Manager-macOS
-          path: dist/VMware Snapshot Manager-macOS.zip
+          name: pySnap-macOS
+          path: dist/pySnap-macOS.zip
 
   release:
     needs: [build-windows, build-macos]
@@ -93,42 +95,53 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11.9'
+      
+      - name: Get Version
+        id: version
+        run: |
+          VERSION=$(python -c "from version import __version__; print(__version__)")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      
       - name: Download Windows Build
         uses: actions/download-artifact@v4
         with:
-          name: VMware-Snapshot-Manager-Windows
+          name: pySnap-Windows
           path: dist/windows
       
       - name: Download macOS Build
         uses: actions/download-artifact@v4
         with:
-          name: VMware-Snapshot-Manager-macOS
+          name: pySnap-macOS
           path: dist/macos
       
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Release ${{ github.ref_name }}
+          name: pySnap v${{ steps.version.outputs.version }}
           body: |
-            VMware Snapshot Manager ${{ github.ref_name }}
+            pySnap - VMware Snapshot Manager v${{ steps.version.outputs.version }}
             
             ## Downloads
-            - Windows: VMware Snapshot Manager-Windows.zip
-            - macOS: VMware Snapshot Manager-macOS.zip
+            - Windows: pySnap-Windows.zip
+            - macOS: pySnap-macOS.zip
             
             ## Installation
             Windows:
             1. Download and extract the ZIP file
-            2. Run VMware Snapshot Manager.exe from the extracted folder
+            2. Run pySnap.exe from the extracted folder
             
             macOS:
             1. Download and extract the ZIP file
-            2. Move VMware Snapshot Manager.app to Applications (optional)
+            2. Move pySnap.app to Applications (optional)
             3. Right-click the app and select "Open" (first time only)
             
             For detailed instructions, see the [README.md](README.md)
           files: |
-            dist/windows/VMware Snapshot Manager-Windows.zip
-            dist/macos/VMware Snapshot Manager-macOS.zip
+            dist/windows/pySnap-Windows.zip
+            dist/macos/pySnap-macOS.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
