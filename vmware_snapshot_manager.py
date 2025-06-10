@@ -610,12 +610,7 @@ class SnapshotManagerWindow(QMainWindow):
         # After loading saved_servers
         self.check_auto_connect()
 
-        # Add settings menu
-        menubar = self.menuBar()
-        settings_menu = menubar.addMenu('Settings')
-        
-        auto_connect_action = settings_menu.addAction('Auto-Connect Settings')
-        auto_connect_action.triggered.connect(self.show_auto_connect_settings)
+        # Settings menu removed - auto-connect is now manual only
 
     def get_snapshots(self):
         try:
@@ -1341,22 +1336,8 @@ class SnapshotManagerWindow(QMainWindow):
         self.status_label.setText("Ready")
 
     def check_auto_connect(self):
-        """Check and handle auto-connect settings"""
-        settings = QSettings()
-        
-        # Check if this is first run or if we should ask
-        first_run = settings.value("FirstRun", True, type=bool)
-        auto_connect = settings.value("AutoConnect", None)
-        
-        if first_run or auto_connect is None:
-            dialog = AutoConnectDialog(self)
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                auto_connect = dialog.auto_connect.isChecked()
-                if dialog.dont_ask.isChecked():
-                    settings.setValue("AutoConnect", auto_connect)
-                settings.setValue("FirstRun", False)
-        
-        # Auto-connect is now manual via button - no automatic startup connection
+        """Initialize without auto-connect on startup"""
+        # Auto-connect is now manual via button only
         self.status_label.setText("Ready")
 
     def manual_auto_connect(self):
@@ -1412,17 +1393,6 @@ class SnapshotManagerWindow(QMainWindow):
         QTimer.singleShot(3000, lambda: self.status_label.setText("Ready"))
 
 
-    def show_auto_connect_settings(self):
-        """Show dialog to modify auto-connect settings"""
-        settings = QSettings()
-        current_setting = settings.value("AutoConnect", False, type=bool)
-        
-        dialog = AutoConnectDialog(self)
-        dialog.auto_connect.setChecked(current_setting)
-        dialog.dont_ask.hide()  # Hide "don't ask again" when accessed from menu
-        
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            settings.setValue("AutoConnect", dialog.auto_connect.isChecked())
     
     def apply_filters(self):
         """
@@ -2066,42 +2036,6 @@ class SnapshotCreateWorker(QThread):
         
         return 'Unknown'
 
-class AutoConnectDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Auto-Connect Settings")
-        self.setModal(True)
-        
-        layout = QVBoxLayout(self)
-        
-        # Message
-        msg = QLabel(
-            "Would you like to automatically connect to saved vCenters when the application starts?\n"
-            "This will use your saved credentials from the system keychain."
-        )
-        msg.setWordWrap(True)
-        layout.addWidget(msg)
-        
-        # Checkbox
-        self.auto_connect = QCheckBox("Auto-connect to saved vCenters on startup")
-        self.auto_connect.setChecked(True)
-        layout.addWidget(self.auto_connect)
-        
-        # Don't ask again checkbox
-        self.dont_ask = QCheckBox("Remember my choice and don't ask again")
-        self.dont_ask.setChecked(True)
-        layout.addWidget(self.dont_ask)
-        
-        # Buttons
-        button_box = QHBoxLayout()
-        ok_btn = QPushButton("OK")
-        ok_btn.clicked.connect(self.accept)
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        
-        button_box.addWidget(ok_btn)
-        button_box.addWidget(cancel_btn)
-        layout.addLayout(button_box)
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     """Global exception handler"""
