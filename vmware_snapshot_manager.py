@@ -13,7 +13,7 @@ import os
 import json
 import logging
 from logging.handlers import RotatingFileHandler
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import urllib3
 import time
 from PyQt6.QtGui import QColor, QBrush, QIcon
@@ -25,6 +25,27 @@ from snapshot_filters import SnapshotFilterPanel
 from version import __version__
 
 # Built by Christian Salas
+
+def format_vmware_time(vmware_datetime):
+    """
+    Convert VMware's UTC datetime to local timezone and format as string.
+    
+    Args:
+        vmware_datetime: VMware createTime datetime object (assumed to be UTC)
+        
+    Returns:
+        str: Formatted datetime string in local timezone ('YYYY-MM-DD HH:MM')
+    """
+    # VMware createTime appears to be in UTC, convert to local timezone
+    if vmware_datetime.tzinfo is None:
+        # Treat as UTC if no timezone info
+        vmware_datetime = vmware_datetime.replace(tzinfo=timezone.utc)
+    
+    # Convert to local timezone
+    local_time = vmware_datetime.astimezone()
+    
+    # Format as string
+    return local_time.strftime('%Y-%m-%d %H:%M')
 
 class ProgressTracker:
     """Standardized progress tracking for all operations"""
@@ -92,7 +113,7 @@ class SnapshotFetchWorker(QThread):
                                     'vm_name': vm.name,
                                     'vcenter': hostname,
                                     'name': snapshot.name,
-                                    'created': snapshot.createTime.strftime('%Y-%m-%d %H:%M'),
+                                    'created': format_vmware_time(snapshot.createTime),
                                     'created_by': created_by,
                                     'description': snapshot.description or '',
                                     'snapshot': snapshot,
@@ -1918,7 +1939,7 @@ class SnapshotCreateWorker(QThread):
                                 if vm.snapshot:
                                     # Find the snapshot that was just created
                                     for snapshot in self.get_snapshots(vm.snapshot.rootSnapshotList):
-                                        if snapshot.name == "Monthly OS Patching" and snapshot.createTime.strftime('%Y-%m-%d') == datetime.now().strftime('%Y-%m-%d'):
+                                        if snapshot.name == "Monthly OS Patching" and format_vmware_time(snapshot.createTime)[:10] == datetime.now().strftime('%Y-%m-%d'):
                                             snapshot_obj = snapshot
                                             break
                                 
@@ -1933,7 +1954,7 @@ class SnapshotCreateWorker(QThread):
                                         'vm_name': vm.name,
                                         'vcenter': vcenter,
                                         'name': snapshot_obj.name,
-                                        'created': snapshot_obj.createTime.strftime('%Y-%m-%d %H:%M'),
+                                        'created': format_vmware_time(snapshot_obj.createTime),
                                         'created_by': created_by,
                                         'description': snapshot_obj.description or '',
                                         'snapshot': snapshot_obj,
