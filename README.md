@@ -2,7 +2,7 @@
 
 A professional Python-based GUI application for managing VMware snapshots across multiple vCenter servers. pySnap is specifically designed to help system administrators efficiently manage patching snapshots with enterprise-grade features and security.
 
-![pySnap v1.2.1](https://img.shields.io/badge/version-1.2.1-blue.svg)
+![pySnap v1.2.3](https://img.shields.io/badge/version-1.2.1-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)
 ![Python](https://img.shields.io/badge/python-3.6%2B-green.svg)
 
