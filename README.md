@@ -43,38 +43,12 @@ A professional Python-based GUI application for managing VMware snapshots across
 - **keyring** - Secure credential storage
 - **urllib3** - HTTP library
 
-### Installation
-```bash
-pip install -r requirements.txt
-```
-
-### For Development
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run tests
-python run_tests.py
-
-# Build for macOS
-./build_mac.sh
-```
-
-## 🚀 Usage
-
-### Quick Start
-
-1. **Launch pySnap**
-   ```bash
-   python vmware_snapshot_manager.py
-   ```
-
-2. **Connect to vCenter**
+1. **Connect to vCenter**
    - Click "Add vCenter"
    - Enter hostname, username, and password
    - Optionally save credentials for auto-connect
 
-3. **Fetch Snapshots**
+2. **Fetch Snapshots**
    - Click "Fetch Snapshots" to load data from all connected vCenters
    - Use filters to find specific snapshots
 
@@ -112,46 +86,6 @@ python run_tests.py
 - Choice between business days vs calendar days
 - Customizable age warnings
 
-## 🏗️ Build and Distribution
-
-### macOS
-```bash
-# Build universal binary (Intel + Apple Silicon)
-./build_mac.sh
-
-# Or use PyInstaller directly
-pyinstaller pysnap_mac.spec
-```
-
-### Windows/Linux
-```bash
-pyinstaller --windowed --name "pySnap" --icon=icons/app_icon.ico vmware_snapshot_manager.py
-```
-
-### Automated Builds
-pySnap includes GitHub Actions for automated cross-platform builds:
-- Builds triggered on git tags (e.g., `v1.2.1`)
-- Comprehensive testing before build
-- Automatic release creation with download assets
-
-## 🧪 Testing
-
-pySnap includes a comprehensive test suite covering:
-
-- **Configuration Management**: Secure credential storage and server configurations
-- **Progress Tracking**: Standardized progress system across all operations
-- **Utility Functions**: Username extraction, date calculations, and data validation
-
-```bash
-# Run all tests
-python run_tests.py
-
-# Run specific test modules
-python test_config_manager.py
-python test_progress_tracker.py
-python test_utilities.py
-```
-
 ## 🔒 Security Features
 
 - **Keychain Integration**: Native secure storage on all platforms
@@ -170,38 +104,6 @@ python test_utilities.py
 - **vCenter Server**: 6.5+
 - **ESXi**: 6.5+
 - **vSphere**: 6.5+
-
-## 🔄 Version Management
-
-pySnap uses semantic versioning (MAJOR.MINOR.PATCH):
-- **MAJOR**: Breaking changes
-- **MINOR**: New features (backward compatible)
-- **PATCH**: Bug fixes
-
-Current version: **1.2.1**
-
-## 🚧 Development
-
-### Project Structure
-```
-├── vmware_snapshot_manager.py  # Main application
-├── snapshot_filters.py         # Advanced filtering system
-├── version.py                  # Version management
-├── pysnap_mac.spec            # macOS build configuration
-├── build_mac.sh               # macOS build script
-├── test_*.py                  # Test suite
-├── run_tests.py               # Test runner
-└── .github/workflows/         # CI/CD pipeline
-```
-
-### Contributing
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
-
-## 📖 Documentation
 
 ### Logging
 - **Log Location**: `~/.vmware_snapshot_manager.log`
@@ -233,5 +135,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 *pySnap is not affiliated with or endorsed by VMware, Inc. VMware and vSphere are registered trademarks of VMware, Inc.*
 
 ---
-
-**Professional VMware snapshot management made simple.** 🚀
