@@ -26,9 +26,9 @@ def run_all_tests():
         try:
             tests = loader.loadTestsFromName(module_name)
             suite.addTests(tests)
-            print(f"✓ Loaded tests from {module_name}")
+            print(f"[OK] Loaded tests from {module_name}")
         except Exception as e:
-            print(f"✗ Failed to load {module_name}: {e}")
+            print(f"[FAIL] Failed to load {module_name}: {e}")
             return False
     
     # Run tests with detailed output
@@ -47,12 +47,12 @@ def run_all_tests():
     if result.failures:
         print(f"\nFAILURES ({len(result.failures)}):")
         for test, _ in result.failures:
-            print(f"  • {test}")
+            print(f"  - {test}")
     
     if result.errors:
         print(f"\nERRORS ({len(result.errors)}):")
         for test, _ in result.errors:
-            print(f"  • {test}")
+            print(f"  - {test}")
     
     return len(result.failures) == 0 and len(result.errors) == 0
 
