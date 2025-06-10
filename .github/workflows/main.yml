@@ -118,10 +118,20 @@ jobs:
           name: pySnap-macOS
           path: dist/macos
       
+      - name: Debug - List downloaded files
+        run: |
+          echo "Windows files:"
+          ls -la dist/windows/
+          echo "macOS files:"
+          ls -la dist/macos/
+          echo "File sizes:"
+          du -h dist/windows/* dist/macos/*
+      
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v1
         with:
           name: pySnap v${{ steps.version.outputs.version }}
+          tag_name: ${{ github.ref_name }}
           body: |
             pySnap - VMware Snapshot Manager v${{ steps.version.outputs.version }}
             
@@ -143,5 +153,7 @@ jobs:
           files: |
             dist/windows/pySnap-Windows.zip
             dist/macos/pySnap-macOS.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
