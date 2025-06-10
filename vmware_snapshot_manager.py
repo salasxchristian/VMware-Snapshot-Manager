@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer, QMimeData
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim, vmodl
 import ssl
+import socket
 import os
 import json
 import logging
@@ -355,7 +356,7 @@ class SnapshotDeleteWorker(QThread):
 class SnapshotManagerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("VMware Snapshot Manager")
+        self.setWindowTitle("pySnap - VMware Snapshot Manager")
         self.resize(1200, 600)
         
         # Load and apply last window position
@@ -383,7 +384,7 @@ class SnapshotManagerWindow(QMainWindow):
         self.vcenter_connections = {}
         self.snapshots = {}
         self.setup_logging()
-        self.logger = logging.getLogger('SnapshotManager')
+        self.logger = logging.getLogger('pySnap')
         self.config_manager = ConfigManager()
         self.saved_servers = self.config_manager.load_servers()
         
@@ -408,6 +409,10 @@ class SnapshotManagerWindow(QMainWindow):
         self.add_conn_btn = QPushButton("Add vCenter")
         self.add_conn_btn.clicked.connect(self.add_vcenter)
         
+        self.auto_conn_btn = QPushButton("Auto-Connect")
+        self.auto_conn_btn.clicked.connect(self.manual_auto_connect)
+        self.auto_conn_btn.setEnabled(len(self.saved_servers) > 0)
+        
         self.clear_conn_btn = QPushButton("Clear Connections")
         self.clear_conn_btn.clicked.connect(self.clear_connections)
         self.clear_conn_btn.setEnabled(False)
@@ -426,8 +431,10 @@ class SnapshotManagerWindow(QMainWindow):
         # Connect to filter panel and save state when changed
         self.patch_filter_checkbox.stateChanged.connect(self.save_patch_filter_state)
         self.patch_filter_checkbox.stateChanged.connect(self.sync_patch_filter_to_panel)
+        self.patch_filter_checkbox.stateChanged.connect(self.apply_filters)
         
         conn_layout.addWidget(self.add_conn_btn)
+        conn_layout.addWidget(self.auto_conn_btn)
         conn_layout.addWidget(self.clear_conn_btn)
         conn_layout.addWidget(self.conn_label)
         conn_layout.addStretch()
@@ -437,9 +444,16 @@ class SnapshotManagerWindow(QMainWindow):
         self.filter_panel = SnapshotFilterPanel()
         self.filter_panel.filters_changed.connect(self.apply_filters)
         self.filter_panel.filters_changed.connect(self.sync_patch_filter_from_panel)
+        self.filter_panel.filters_changed.connect(self.update_old_snapshots_label)
         
         # Sync the patching filter with the main checkbox
         self.filter_panel.set_patching_filter(patch_filter_enabled)
+        
+        # Reset all filters to defaults on app launch
+        self.filter_panel.reset_all_filters_to_defaults()
+        
+        # Update the color legend label
+        self.update_old_snapshots_label()
         
         # Tree widget for snapshots
         self.tree = QTreeWidget()
@@ -497,7 +511,7 @@ class SnapshotManagerWindow(QMainWindow):
         highlight_layout = QHBoxLayout(highlight_frame)
         
         # Create color boxes with labels
-        def create_color_box(color, text):
+        def create_color_box(color, text, add_help_button=False):
             box_layout = QHBoxLayout()
             color_box = QLabel()
             color_box.setFixedSize(16, 16)
@@ -505,12 +519,38 @@ class SnapshotManagerWindow(QMainWindow):
             label = QLabel(text)
             box_layout.addWidget(color_box)
             box_layout.addWidget(label)
+            
+            if add_help_button:
+                # Add help button for chain snapshots
+                help_button = QPushButton("?")
+                help_button.setFixedSize(20, 20)
+                help_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f0f0f0;
+                        border: 1px solid #999;
+                        border-radius: 10px;
+                        font-size: 12px;
+                        font-weight: bold;
+                        color: #666;
+                    }
+                    QPushButton:hover {
+                        background-color: #e0e0e0;
+                        border-color: #666;
+                    }
+                """)
+                help_button.clicked.connect(lambda: self.show_chain_snapshot_help())
+                box_layout.addWidget(help_button)
+            
             box_layout.addStretch()
             return box_layout
 
-        # Add color legends
-        highlight_layout.addLayout(create_color_box("#CCCCCC", "Child Snapshots"))  # Gray for child snapshots
-        highlight_layout.addLayout(create_color_box("#FFFF99", "Snapshots > 3 Business Days Old"))  # Yellow for old snapshots
+        # Add color legends with help button for chain snapshots
+        child_snapshot_layout = create_color_box("#CCCCCC", "Chain Snapshots", add_help_button=True)
+        highlight_layout.addLayout(child_snapshot_layout)
+        
+        # Create dynamic label for old snapshots that updates with filter settings
+        self.old_snapshots_layout = create_color_box("#FFFF99", "Snapshots > 3 business days")
+        highlight_layout.addLayout(self.old_snapshots_layout)
         highlight_layout.addStretch()
         
         # Replace the old highlight info with the new frame
@@ -728,7 +768,7 @@ class SnapshotManagerWindow(QMainWindow):
 
     def setup_logging(self):
         """Configure application logging"""
-        log_file = os.path.join(os.path.expanduser("~"), "snapshot_manager.log")
+        log_file = os.path.join(os.path.expanduser("~"), "pysnap.log")
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
@@ -744,7 +784,7 @@ class SnapshotManagerWindow(QMainWindow):
         console_handler.setFormatter(formatter)
         
         # Setup root logger
-        logger = logging.getLogger('SnapshotManager')
+        logger = logging.getLogger('pySnap')
         logger.setLevel(logging.INFO)
         logger.addHandler(file_handler)
         logger.addHandler(console_handler)
@@ -792,13 +832,21 @@ class SnapshotManagerWindow(QMainWindow):
                 # Disable SSL verification warnings
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                 
-                si = SmartConnect(
-                    host=data['hostname'],
-                    user=data['username'],
-                    pwd=data['password'],
-                    sslContext=context,
-                    disableSslCertValidation=True
-                )
+                # Set temporary socket timeout for this connection
+                old_timeout = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(10.0)
+                
+                try:
+                    si = SmartConnect(
+                        host=data['hostname'],
+                        user=data['username'],
+                        pwd=data['password'],
+                        sslContext=context,
+                        disableSslCertValidation=True
+                    )
+                finally:
+                    # Restore original timeout
+                    socket.setdefaulttimeout(old_timeout)
                 
                 self.status_label.setText(f"Connected to {data['hostname']}, initializing...")
                 
@@ -910,7 +958,10 @@ class SnapshotManagerWindow(QMainWindow):
                 chain_status.append("Is a child snapshot")
             
             warning_text = "Cannot delete: " + " and ".join(chain_status)
-            warning_text += "\nPlease use vSphere Client to manage snapshot chains"
+            warning_text += "\n\nChain snapshots must be deleted through vSphere Client because:"
+            warning_text += "\n• They have dependencies that require special handling"
+            warning_text += "\n• Improper deletion can corrupt VM data"
+            warning_text += "\n• VMware needs to consolidate disk changes properly"
             item.setToolTip(0, warning_text)
         else:
             # Normal snapshot handling
@@ -937,25 +988,34 @@ class SnapshotManagerWindow(QMainWindow):
             chain_status = "Independent Snapshot"  # Changed from "Safe to Delete"
         item.setText(7, chain_status)
         
-        # Check if snapshot is older than 3 business days
-        created_date = datetime.strptime(data['created'], '%Y-%m-%d %H:%M')
-        current_date = datetime.now()
-        
-        # Calculate business days between dates
-        business_days = self.get_business_days(created_date, current_date)
-        
-        if business_days > 3:
-            # Highlight old snapshots with yellow colors
-            background_color = QColor(255, 255, 200)  # Light yellow
-            text_color = QColor(139, 69, 19)  # Saddle brown (dark brown)
+        # Only apply age highlighting if NOT part of a chain (chain highlighting takes precedence)
+        if not is_in_chain:
+            # Check if snapshot is older than the configured threshold
+            created_date = datetime.strptime(data['created'], '%Y-%m-%d %H:%M')
+            current_date = datetime.now()
             
-            for column in range(8):
-                item.setBackground(column, QBrush(background_color))
-                item.setForeground(column, QBrush(text_color))
+            # Get the age threshold and day type from the filter panel
+            age_threshold = self.filter_panel.get_age_threshold()
+            day_type = self.filter_panel.get_day_type()
             
-            # Add tooltip with age information
-            age_text = f"Snapshot is {business_days} business days old"
-            item.setToolTip(0, age_text)
+            # Calculate days between dates based on selected type
+            if day_type == "business days":
+                days_old = self.get_business_days(created_date, current_date)
+            else:  # calendar days
+                days_old = self.get_calendar_days(created_date, current_date)
+            
+            if days_old > age_threshold:
+                # Highlight old snapshots with yellow colors
+                background_color = QColor(255, 255, 200)  # Light yellow
+                text_color = QColor(139, 69, 19)  # Saddle brown (dark brown)
+                
+                for column in range(8):
+                    item.setBackground(column, QBrush(background_color))
+                    item.setForeground(column, QBrush(text_color))
+                
+                # Add tooltip with age information
+                age_text = f"Snapshot is {days_old} {day_type} old (threshold: {age_threshold} {day_type})"
+                item.setToolTip(0, age_text)
         
         # Generate a unique ID for the snapshot
         snapshot_id = f"{data['vcenter']}_{data['vm_name']}_{data['name']}"
@@ -984,6 +1044,10 @@ class SnapshotManagerWindow(QMainWindow):
             current += timedelta(days=1)
             
         return business_days
+    
+    def get_calendar_days(self, start_date, end_date):
+        """Calculate number of calendar days between two dates"""
+        return (end_date - start_date).days
 
     def on_fetch_error(self, error_msg):
         """Handle fetch errors"""
@@ -1292,57 +1356,61 @@ class SnapshotManagerWindow(QMainWindow):
                     settings.setValue("AutoConnect", auto_connect)
                 settings.setValue("FirstRun", False)
         
-        # Perform auto-connect if enabled
-        if auto_connect:
-            # Show status without progress bar
-            self.status_label.setText("Auto-connecting to saved vCenters...")
-            QTimer.singleShot(0, self.auto_connect_to_saved)
-        else:
-            self.status_label.setText("Ready")
-
-    def auto_connect_to_saved(self):
-        """Automatically connect to all saved vCenters"""
-        servers = list(self.saved_servers.items())
-        total = len(servers)
-        connected = 0
-        
-        for hostname, username in servers:
-            password = self.config_manager.get_password(hostname, username)
-            if password:
-                try:
-                    # Update status without progress bar
-                    connected += 1
-                    self.status_label.setText(f"Auto-connecting to {hostname}... ({connected}/{total})")
-                    
-                    # Create SSL context that ignores verification
-                    context = ssl.create_default_context()
-                    context.check_hostname = False
-                    context.verify_mode = ssl.CERT_NONE
-                    
-                    # Disable SSL verification warnings
-                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                    
-                    si = SmartConnect(
-                        host=hostname,
-                        user=username,
-                        pwd=password,
-                        sslContext=context,
-                        disableSslCertValidation=True
-                    )
-                    
-                    if si:
-                        self.vcenter_connections[hostname] = si
-                        self.active_credentials[hostname] = {
-                            'username': username,
-                            'password': password
-                        }
-                        self.logger.info(f"Auto-connected to {hostname}")
-                except Exception as e:
-                    self.logger.error(f"Failed to auto-connect to {hostname}: {str(e)}")
-        
-        # Update UI after all connection attempts
-        self.update_connection_status()
+        # Auto-connect is now manual via button - no automatic startup connection
         self.status_label.setText("Ready")
+
+    def manual_auto_connect(self):
+        """Manually trigger auto-connect via button click"""
+        if not self.saved_servers:
+            QMessageBox.information(self, "Info", "No saved servers to connect to.")
+            return
+        
+        # Disable the button during connection
+        self.auto_conn_btn.setEnabled(False)
+        self.auto_conn_btn.setText("Connecting...")
+        
+        # Update connection label
+        self.conn_label.setText("🔄 Auto-connecting to saved vCenters...")
+        self.start_auto_connect_worker()
+
+    def start_auto_connect_worker(self):
+        """Start the auto-connect worker thread"""
+        if not self.saved_servers:
+            self.status_label.setText("Ready")
+            return
+            
+        self.auto_connect_worker = AutoConnectWorker(self.saved_servers, self.config_manager)
+        self.auto_connect_worker.progress.connect(self.update_auto_connect_status)
+        self.auto_connect_worker.connection_made.connect(self.handle_auto_connection)
+        self.auto_connect_worker.finished.connect(self.on_auto_connect_finished)
+        self.auto_connect_worker.error.connect(self.on_auto_connect_error)
+        self.auto_connect_worker.start()
+    
+    def update_auto_connect_status(self, message):
+        """Update connection label during auto-connect"""
+        self.conn_label.setText(f"🔄 {message}")
+    
+    def handle_auto_connection(self, hostname, si, credentials):
+        """Handle successful auto-connection"""
+        self.vcenter_connections[hostname] = si
+        self.active_credentials[hostname] = credentials
+        self.logger.info(f"Auto-connected to {hostname}")
+    
+    def on_auto_connect_finished(self):
+        """Handle auto-connect completion"""
+        self.update_connection_status()
+        # Re-enable auto-connect button
+        self.auto_conn_btn.setEnabled(True)
+        self.auto_conn_btn.setText("Auto-Connect")
+    
+    def on_auto_connect_error(self, error_msg):
+        """Handle auto-connect errors"""
+        self.logger.error(error_msg)
+        # Update status to show error briefly
+        self.status_label.setText(f"Connection error - check log")
+        # Reset status after 3 seconds
+        QTimer.singleShot(3000, lambda: self.status_label.setText("Ready"))
+
 
     def show_auto_connect_settings(self):
         """Show dialog to modify auto-connect settings"""
@@ -1361,8 +1429,14 @@ class SnapshotManagerWindow(QMainWindow):
         Apply current filters to the snapshot tree.
         This method is called whenever any filter changes.
         """
+        # Check if tree exists (it might not during initialization)
+        if not hasattr(self, 'tree') or self.tree is None:
+            return
+            
         root = self.tree.invisibleRootItem()
         visible_count = 0
+        age_threshold = self.filter_panel.get_age_threshold()
+        patching_only = self.patch_filter_checkbox.isChecked()
         
         for i in range(root.childCount()):
             item = root.child(i)
@@ -1371,12 +1445,20 @@ class SnapshotManagerWindow(QMainWindow):
             if snapshot_id in self.snapshots:
                 snapshot_data = self.snapshots[snapshot_id]
                 
-                # Check if item matches filters
+                # Check if item matches filter panel filters
                 should_show = self.filter_panel.matches_filters(snapshot_data)
+                
+                # Apply patching filter if enabled
+                if should_show and patching_only:
+                    snapshot_name = snapshot_data.get('name', '').lower()
+                    should_show = 'patch' in snapshot_name
                 
                 item.setHidden(not should_show)
                 if should_show:
                     visible_count += 1
+                
+                # Re-apply age-based highlighting when threshold changes
+                self.update_age_highlighting(item, snapshot_data, age_threshold)
         
         # Update counter to show filtered results
         total_count = self.tree.topLevelItemCount()
@@ -1384,6 +1466,55 @@ class SnapshotManagerWindow(QMainWindow):
             self.counter_label.setText(f"Snapshots: {total_count}")
         else:
             self.counter_label.setText(f"Snapshots: {visible_count} of {total_count} shown")
+    
+    def update_age_highlighting(self, item, snapshot_data, age_threshold):
+        """
+        Update age-based highlighting for a tree item.
+        
+        Args:
+            item: QTreeWidgetItem to update
+            snapshot_data: Dictionary containing snapshot information
+            age_threshold: Age threshold in business days
+        """
+        try:
+            created_date = datetime.strptime(snapshot_data['created'], '%Y-%m-%d %H:%M')
+            current_date = datetime.now()
+            
+            # Get day type from filter panel  
+            day_type = self.filter_panel.get_day_type()
+            
+            # Calculate days based on selected type
+            if day_type == "business days":
+                days_old = self.get_business_days(created_date, current_date)
+            else:  # calendar days
+                days_old = self.get_calendar_days(created_date, current_date)
+            
+            # Check if snapshot is part of a chain (already has different highlighting)
+            is_in_chain = snapshot_data.get('has_children', False) or snapshot_data.get('is_child', False)
+            
+            if days_old > age_threshold and not is_in_chain:
+                # Apply age highlighting
+                background_color = QColor(255, 255, 200)  # Light yellow
+                text_color = QColor(139, 69, 19)  # Saddle brown
+                
+                for column in range(8):
+                    item.setBackground(column, QBrush(background_color))
+                    item.setForeground(column, QBrush(text_color))
+                
+                age_text = f"Snapshot is {days_old} {day_type} old (threshold: {age_threshold} {day_type})"
+                item.setToolTip(0, age_text)
+            elif not is_in_chain:
+                # Remove age highlighting (but preserve chain highlighting if applicable)
+                for column in range(8):
+                    item.setBackground(column, QBrush())  # Clear background
+                    item.setForeground(column, QBrush())  # Clear foreground
+                
+                # Clear age-related tooltip
+                item.setToolTip(0, "")
+                
+        except (ValueError, KeyError):
+            # If date parsing fails, don't apply highlighting
+            pass
     
     def update_snapshot_counter(self):
         """
@@ -1393,9 +1524,10 @@ class SnapshotManagerWindow(QMainWindow):
     
     def clear_filters_on_refresh(self):
         """
-        Clear all filters when snapshots are refreshed.
+        Reset all filters to defaults when snapshots are refreshed.
         """
-        self.filter_panel.clear_all_filters()
+        self.filter_panel.reset_all_filters_to_defaults()
+        self.update_old_snapshots_label()
     
     def save_patch_filter_state(self):
         """
@@ -1423,6 +1555,51 @@ class SnapshotManagerWindow(QMainWindow):
             self.patch_filter_checkbox.setChecked(panel_state)
             self.save_patch_filter_state()  # Save the new state
             self.patch_filter_checkbox.stateChanged.connect(self.sync_patch_filter_to_panel)
+    
+    def update_old_snapshots_label(self):
+        """
+        Update the old snapshots color legend label with current filter settings.
+        """
+        if hasattr(self, 'old_snapshots_layout') and hasattr(self, 'filter_panel'):
+            age_threshold = self.filter_panel.get_age_threshold()
+            day_type = self.filter_panel.get_day_type()
+            
+            # Find the label widget in the layout and update its text
+            for i in range(self.old_snapshots_layout.count()):
+                item = self.old_snapshots_layout.itemAt(i)
+                if item and item.widget() and isinstance(item.widget(), QLabel):
+                    widget = item.widget()
+                    # Skip the color box (first item) and update the text label
+                    if widget.text() and "Snapshots" in widget.text():
+                        widget.setText(f"Snapshots > {age_threshold} {day_type}")
+                        break
+    
+    def show_chain_snapshot_help(self):
+        """
+        Show help dialog explaining chain snapshots.
+        """
+        QMessageBox.information(
+            self,
+            "About Chain Snapshots",
+            "<h3>What are Chain Snapshots?</h3>"
+            "<p>Chain snapshots are part of a snapshot hierarchy where one snapshot depends on another. "
+            "In VMware, when you create multiple snapshots, they form a chain where each snapshot stores "
+            "only the changes made since the previous snapshot.</p>"
+            
+            "<h3>Why can't I delete them here?</h3>"
+            "<p>Chain snapshots cannot be safely deleted through this application because:</p>"
+            "<ul>"
+            "<li><b>Data Dependencies:</b> Child snapshots depend on their parent snapshots</li>"
+            "<li><b>Risk of Corruption:</b> Deleting a parent breaks all child snapshots</li>"
+            "<li><b>Complex Consolidation:</b> VMware must carefully merge disk changes</li>"
+            "</ul>"
+            
+            "<h3>How to manage them?</h3>"
+            "<p>Use <b>vSphere Client</b> to properly delete chain snapshots. VMware will handle "
+            "the complex disk consolidation process to ensure your VM data remains intact.</p>"
+            
+            "<p><i>Tip: Independent snapshots (not grayed out) can be safely deleted using pySnap.</i></p>"
+        )
 
 class ConfigManager:
     def __init__(self):
@@ -1593,6 +1770,76 @@ class CleanTextEdit(QTextEdit):
             super().insertFromMimeData(clean_mime)
         else:
             super().insertFromMimeData(source)
+
+class AutoConnectWorker(QThread):
+    """Worker thread for auto-connecting to saved vCenters"""
+    progress = pyqtSignal(str)  # status message
+    connection_made = pyqtSignal(str, object, dict)  # hostname, service_instance, credentials
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+
+    def __init__(self, saved_servers, config_manager):
+        super().__init__()
+        self.saved_servers = saved_servers
+        self.config_manager = config_manager
+
+    def run(self):
+        try:
+            # Set socket timeout for all connections in this thread
+            socket.setdefaulttimeout(10.0)  # Increased to 10 seconds
+            
+            servers = list(self.saved_servers.items())
+            total = len(servers)
+            connected = 0
+            
+            for hostname, username in servers:
+                password = self.config_manager.get_password(hostname, username)
+                if password:
+                    try:
+                        connected += 1
+                        self.progress.emit(f"Auto-connecting to {hostname}... ({connected}/{total})")
+                        
+                        # Create SSL context that ignores verification
+                        context = ssl.create_default_context()
+                        context.check_hostname = False
+                        context.verify_mode = ssl.CERT_NONE
+                        
+                        # Disable SSL verification warnings
+                        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                        
+                        si = SmartConnect(
+                            host=hostname,
+                            user=username,
+                            pwd=password,
+                            sslContext=context,
+                            disableSslCertValidation=True
+                        )
+                        
+                        if si:
+                            credentials = {'username': username, 'password': password}
+                            self.connection_made.emit(hostname, si, credentials)
+                        else:
+                            self.error.emit(f"Failed to connect to {hostname}: No service instance returned")
+                    except socket.timeout:
+                        self.error.emit(f"Connection to {hostname} timed out after 10 seconds")
+                        # Continue with next server
+                    except socket.gaierror as e:
+                        self.error.emit(f"Cannot resolve hostname {hostname}: {str(e)}")
+                        # Continue with next server
+                    except ConnectionRefusedError as e:
+                        self.error.emit(f"Connection refused by {hostname}: {str(e)}")
+                        # Continue with next server
+                    except Exception as e:
+                        # Log but don't crash - continue with next server
+                        self.error.emit(f"Failed to auto-connect to {hostname}: {type(e).__name__}: {str(e)}")
+                        # Continue with next server
+            
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(f"Auto-connect error: {str(e)}")
+        finally:
+            # Reset socket timeout to default
+            socket.setdefaulttimeout(None)
 
 class SnapshotCreateWorker(QThread):
     progress = pyqtSignal(int, int, str)  # completed, total, message
@@ -1856,20 +2103,51 @@ class AutoConnectDialog(QDialog):
         button_box.addWidget(cancel_btn)
         layout.addLayout(button_box)
 
+def handle_exception(exc_type, exc_value, exc_traceback):
+    """Global exception handler"""
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    
+    # Log the exception
+    logger = logging.getLogger('pySnap')
+    logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+    
+    # Show simple error dialog
+    from PyQt6.QtWidgets import QMessageBox
+    msg = QMessageBox()
+    msg.setIcon(QMessageBox.Icon.Critical)
+    msg.setWindowTitle("Application Error")
+    msg.setText("An unexpected error occurred. Check the log file ~/pysnap.log for details.")
+    msg.exec()
+
 if __name__ == "__main__":
-    # Fix for macOS focus issues
-    # os.environ['QT_MAC_WANTS_LAYER'] = '1'
-    
-    app = QApplication(sys.argv)
-    app.setApplicationName("VMware Snapshot Manager")
-    app.setOrganizationName("LAUSD")
-    app.setOrganizationDomain("lausd.net")
-    
-    # Set application icon
-    icon_path = os.path.join(os.path.dirname(__file__), 'icons', 'app_icon.png')
-    if os.path.exists(icon_path):
-        app.setWindowIcon(QIcon(icon_path))
-    
-    window = SnapshotManagerWindow()
-    window.show()
-    sys.exit(app.exec())
+    try:
+        # Set up global exception handler
+        sys.excepthook = handle_exception
+        
+        # Fix for macOS focus issues
+        # os.environ['QT_MAC_WANTS_LAYER'] = '1'
+        
+        app = QApplication(sys.argv)
+        app.setApplicationName("pySnap")
+        app.setApplicationDisplayName("pySnap - VMware Snapshot Manager")
+        app.setOrganizationName("LAUSD")
+        app.setOrganizationDomain("lausd.net")
+        
+        # Set application icon
+        icon_path = os.path.join(os.path.dirname(__file__), 'icons', 'app_icon.png')
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
+        
+        window = SnapshotManagerWindow()
+        window.show()
+        
+        sys.exit(app.exec())
+        
+    except Exception as e:
+        # Fallback error handling
+        print(f"Critical error during startup: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

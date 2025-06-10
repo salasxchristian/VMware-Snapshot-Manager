@@ -7,7 +7,7 @@ It includes a collapsible filter panel with various filter types for all snapsho
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                             QLineEdit, QComboBox, QDateEdit, QPushButton,
-                            QFrame, QGridLayout, QSizePolicy, QCheckBox)
+                            QFrame, QGridLayout, QSizePolicy, QCheckBox, QSpinBox)
 from PyQt6.QtCore import Qt, pyqtSignal, QDate
 from PyQt6.QtGui import QIcon
 from datetime import datetime, timedelta
@@ -108,7 +108,7 @@ class SnapshotFilterPanel(QWidget):
         self.date_to_filter.setSpecialValueText("No maximum date")
         filter_layout.addWidget(self.date_to_filter, row, 3)
         
-        # Row 4: Snapshot Type and Patching Filter
+        # Row 4: Snapshot Type
         row += 1
         
         # Snapshot Type filter
@@ -121,10 +121,34 @@ class SnapshotFilterPanel(QWidget):
         self.snapshot_type_filter.addItem("Has Child Snapshots (Delete Manually)")
         filter_layout.addWidget(self.snapshot_type_filter, row, 1)
         
-        # Patching snapshots filter
-        self.patching_only_filter = QCheckBox("Only show 'Patching' snapshots")
-        self.patching_only_filter.setToolTip("When checked, only snapshots containing 'patch' in the name are shown")
-        filter_layout.addWidget(self.patching_only_filter, row, 2, 1, 2)  # Span 2 columns
+        # Row 5: Age Filter
+        row += 1
+        
+        # Age filter - static label
+        age_label = QLabel("Highlight snapshots older than:")
+        filter_layout.addWidget(age_label, row, 0)
+        
+        # Create horizontal layout for spinbox and day type selector
+        age_control_layout = QHBoxLayout()
+        age_control_widget = QWidget()
+        age_control_widget.setLayout(age_control_layout)
+        
+        self.age_threshold_spinbox = QSpinBox()
+        self.age_threshold_spinbox.setMinimum(1)
+        self.age_threshold_spinbox.setMaximum(365)
+        self.age_threshold_spinbox.setValue(3)  # Default to 3 business days
+        self.age_threshold_spinbox.setToolTip("Snapshots older than this threshold will be highlighted in yellow")
+        age_control_layout.addWidget(self.age_threshold_spinbox)
+        
+        self.day_type_combo = QComboBox()
+        self.day_type_combo.addItem("business days")
+        self.day_type_combo.addItem("calendar days")
+        self.day_type_combo.setCurrentText("business days")  # Default to business days
+        self.day_type_combo.setToolTip("Choose whether to count business days (Mon-Fri) or calendar days")
+        age_control_layout.addWidget(self.day_type_combo)
+        
+        age_control_layout.setContentsMargins(0, 0, 0, 0)
+        filter_layout.addWidget(age_control_widget, row, 1)
         
         # Add frames to main layout
         main_layout.addWidget(header_frame)
@@ -141,12 +165,13 @@ class SnapshotFilterPanel(QWidget):
         self.created_by_filter.currentTextChanged.connect(self.filters_changed.emit)
         self.snapshot_type_filter.currentTextChanged.connect(self.filters_changed.emit)
         
-        # Checkbox filters
-        self.patching_only_filter.stateChanged.connect(self.filters_changed.emit)
-        
         # Date filters
         self.date_from_filter.dateChanged.connect(self.filters_changed.emit)
         self.date_to_filter.dateChanged.connect(self.filters_changed.emit)
+        
+        # Age threshold filter
+        self.age_threshold_spinbox.valueChanged.connect(self.filters_changed.emit)
+        self.day_type_combo.currentTextChanged.connect(self.filters_changed.emit)
         
     def toggle_filters(self):
         """Toggle the visibility of the filter panel"""
@@ -170,12 +195,13 @@ class SnapshotFilterPanel(QWidget):
         self.created_by_filter.setCurrentIndex(0)
         self.snapshot_type_filter.setCurrentIndex(0)
         
-        # Reset checkbox filters
-        self.patching_only_filter.setChecked(False)
-        
         # Reset date filters to default range
         self.date_from_filter.setDate(QDate.currentDate().addDays(-30))
         self.date_to_filter.setDate(QDate.currentDate())
+        
+        # Reset age threshold to default
+        self.age_threshold_spinbox.setValue(3)
+        self.day_type_combo.setCurrentText("business days")
         
     def update_dropdown_options(self, snapshots_data):
         """
@@ -232,7 +258,8 @@ class SnapshotFilterPanel(QWidget):
             'vcenter': self.vcenter_filter.currentText() if self.vcenter_filter.currentText() != "All vCenters" else "",
             'created_by': self.created_by_filter.currentText() if self.created_by_filter.currentText() != "All Users" else "",
             'snapshot_type': self.snapshot_type_filter.currentText() if self.snapshot_type_filter.currentText() != "All Types" else "",
-            'patching_only': self.patching_only_filter.isChecked(),
+            'age_threshold': self.age_threshold_spinbox.value(),
+            'day_type': self.day_type_combo.currentText(),
             'date_from': self.date_from_filter.date().toPyDate(),
             'date_to': self.date_to_filter.date().toPyDate()
         }
@@ -288,12 +315,6 @@ class SnapshotFilterPanel(QWidget):
             if filters['snapshot_type'] != snapshot_type:
                 return False
         
-        # Patching snapshots filter
-        if filters['patching_only']:
-            snapshot_name = snapshot_data.get('name', '').lower()
-            if 'patch' not in snapshot_name:
-                return False
-        
         # Date range filter
         try:
             created_str = snapshot_data.get('created', '')
@@ -309,20 +330,74 @@ class SnapshotFilterPanel(QWidget):
         
         return True
     
+    def reset_all_filters_to_defaults(self):
+        """
+        Reset ALL filters to their default values including age threshold and day type.
+        Only called on app startup and snapshot refresh.
+        """
+        # Clear text filters
+        self.vm_name_filter.clear()
+        self.snapshot_search_filter.clear()
+        
+        # Reset dropdown filters
+        self.vcenter_filter.setCurrentIndex(0)
+        self.created_by_filter.setCurrentIndex(0)
+        self.snapshot_type_filter.setCurrentIndex(0)
+        
+        # Reset date filters to default range (last 30 days)
+        self.date_from_filter.setDate(QDate.currentDate().addDays(-30))
+        self.date_to_filter.setDate(QDate.currentDate())
+        
+        # Reset age threshold to default
+        self.age_threshold_spinbox.setValue(3)
+        self.day_type_combo.setCurrentText("business days")
+    
     def set_patching_filter(self, enabled):
         """
-        Set the patching filter checkbox state.
-        
-        Args:
-            enabled (bool): Whether to enable the patching filter
+        Placeholder method for compatibility with main window.
+        Patching filter is now handled by the main window checkbox only.
         """
-        self.patching_only_filter.setChecked(enabled)
+        pass
     
     def get_patching_filter(self):
         """
-        Get the current patching filter state.
+        Placeholder method for compatibility with main window.
+        Always returns False since patching filter is handled elsewhere.
+        """
+        return False
+    
+    def get_age_threshold(self):
+        """
+        Get the current age threshold for highlighting snapshots.
         
         Returns:
-            bool: True if patching filter is enabled
+            int: Age threshold in business days
         """
-        return self.patching_only_filter.isChecked()
+        return self.age_threshold_spinbox.value()
+    
+    def set_age_threshold(self, days):
+        """
+        Set the age threshold for highlighting snapshots.
+        
+        Args:
+            days (int): Age threshold in business days
+        """
+        self.age_threshold_spinbox.setValue(days)
+    
+    def get_day_type(self):
+        """
+        Get the current day type (business days or calendar days).
+        
+        Returns:
+            str: "business days" or "calendar days"
+        """
+        return self.day_type_combo.currentText()
+    
+    def set_day_type(self, day_type):
+        """
+        Set the day type for age calculations.
+        
+        Args:
+            day_type (str): "business days" or "calendar days"
+        """
+        self.day_type_combo.setCurrentText(day_type)
